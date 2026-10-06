@@ -1,0 +1,38 @@
+[package]
+name = "kdmcourier-gui"
+version = "0.1.0"
+description = "KDM Courier, a KDM manager for distributors"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[lib]
+name = "kdmcourier_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+postkit-ffmpeg-link-search = { path = "../../extern/postkit/ffmpeg-link-search" }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+dirs = "6"
+postkit = { path = "../../extern/postkit" }
+guikit-startup = { path = "../../extern/guikit/startup" }
+
+[dev-dependencies]
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+# drives the registered commands through IPC the way the page does
+tauri = { version = "2", features = ["test"] }
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+# tauri's CLI turns this off for `tauri dev` so the page comes from vite.
+# production keeps it on so the webview serves the bundled frontend instead of
+# localhost:1423, which is a blank window when vite is not running
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

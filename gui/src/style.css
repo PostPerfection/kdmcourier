@@ -1,0 +1,42 @@
+@import "../../extern/guikit/src/base.css";
+
+.status-refused,
+.status-failed {
+  color: #f87171;
+}
+.status-issued,
+.status-sent {
+  color: #4ade80;
+}
+.notes {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+}
+.screen-picker {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+}
+.screen-picker label {
+  display: block;
+}
+.cinema-edit {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  margin: 6px 0;
+}
+.cinema-block {
+  margin-bottom: 16px;
+}
+textarea {
+  width: 100%;
+  min-height: 48px;
+}
+.error-text {
+  color: #f87171;
+  white-space: pre-wrap;
+}

@@ -1,0 +1,6 @@
+[submodule "extern/postkit"]
+	path = extern/postkit
+	url = https://github.com/PostPerfection/postkit.git
+[submodule "extern/guikit"]
+	path = extern/guikit
+	url = https://github.com/PostPerfection/guikit.git

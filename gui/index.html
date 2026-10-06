@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KDM Courier</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <button class="sidebar-btn active" data-view="titles" title="Titles">
+          <svg viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+        </button>
+        <button class="sidebar-btn" data-view="cinemas" title="Cinemas">
+          <svg viewBox="0 0 24 24"><path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/></svg>
+        </button>
+        <button class="sidebar-btn" data-view="bookings" title="Bookings">
+          <svg viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z"/></svg>
+        </button>
+        <button class="sidebar-btn" data-view="outbox" title="Outbox">
+          <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+        </button>
+      </div>
+      <div class="sidebar-bottom">
+        <button class="sidebar-btn" data-view="settings" title="Settings">
+          <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <div class="main-area">
+      <header class="toolbar">
+        <div class="toolbar-left">
+          <h1>KDM Courier</h1>
+        </div>
+        <div class="toolbar-right">
+          <span id="status" class="status-badge">Ready</span>
+          <button id="theme-toggle" class="toolbar-btn icon" title="Toggle theme">🌙</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="view active" id="view-titles">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Titles</h2>
+              <div class="panel-actions">
+                <button id="titles-import" class="btn-sm">Import DKDM</button>
+              </div>
+            </div>
+            <table class="jobs-table">
+              <thead>
+                <tr><th>Title</th><th>CPL</th><th>Standard</th><th>DKDM valid from</th><th>DKDM valid until</th></tr>
+              </thead>
+              <tbody id="titles-tbody"></tbody>
+            </table>
+          </section>
+        </div>
+
+        <div class="view" id="view-cinemas">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Cinemas</h2>
+              <div class="panel-actions">
+                <button id="cinemas-import-flm" class="btn-sm">Import FLM</button>
+                <button id="cinemas-import-dcpwizard" class="btn-sm" title="DCP Wizard's cinemas.json">Import DCP Wizard cinemas</button>
+                <button id="history-import-dcpwizard" class="btn-sm" title="DCP Wizard's kdm-history.jsonl">Import DCP Wizard history</button>
+              </div>
+            </div>
+            <ul id="cinemas-import-results" class="notes"></ul>
+            <div id="cinemas-list"></div>
+          </section>
+        </div>
+
+        <div class="view" id="view-bookings">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>New Booking</h2>
+            </div>
+            <form id="booking-form" class="settings-grid">
+              <fieldset>
+                <div class="prop-field">
+                  <label for="booking-title">Title</label>
+                  <select id="booking-title"></select>
+                </div>
+                <div class="prop-field">
+                  <label for="booking-start">Start, in each cinema's local time</label>
+                  <input type="datetime-local" id="booking-start">
+                </div>
+                <div class="prop-field">
+                  <label for="booking-end">End, in each cinema's local time</label>
+                  <input type="datetime-local" id="booking-end">
+                </div>
+                <div class="prop-field">
+                  <label for="booking-formulation">Formulation</label>
+                  <select id="booking-formulation">
+                    <option value="">From each screen's devices</option>
+                    <option value="modified-transitional-1">Modified Transitional 1</option>
+                    <option value="multiple-modified-transitional-1">Multiple Modified Transitional 1</option>
+                    <option value="dci-any">DCI any</option>
+                    <option value="dci-specific">DCI specific</option>
+                  </select>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Screens</legend>
+                <div id="booking-screens" class="screen-picker"></div>
+              </fieldset>
+              <div class="form-actions">
+                <span id="booking-error" class="error-text"></span>
+                <button type="submit" class="btn-primary">Book</button>
+              </div>
+            </form>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Bookings</h2>
+            </div>
+            <table class="jobs-table">
+              <thead>
+                <tr><th>Title</th><th>Start</th><th>End</th><th>Screens</th><th></th></tr>
+              </thead>
+              <tbody id="bookings-tbody"></tbody>
+            </table>
+          </section>
+          <section class="panel" id="booking-detail" hidden>
+            <div class="panel-header">
+              <h2 id="booking-detail-title">Booking</h2>
+              <div class="panel-actions">
+                <label><input type="checkbox" id="issue-email"> Email one ZIP per cinema</label>
+                <button id="issue-folder" class="btn-sm" title="The folder the KDMs and ZIPs are written to">Folder…</button>
+                <span id="issue-folder-path" class="path-display"></span>
+                <button id="issue-run" class="btn-sm btn-primary">Issue</button>
+              </div>
+            </div>
+            <p id="booking-plan-notes" class="notes"></p>
+            <table class="jobs-table">
+              <thead>
+                <tr><th>Screen</th><th>Result</th><th>Formulation or file</th><th>Window</th><th>Rule, warning or reason</th></tr>
+              </thead>
+              <tbody id="booking-detail-tbody"></tbody>
+            </table>
+            <ul id="issue-deliveries" class="notes"></ul>
+          </section>
+        </div>
+
+        <div class="view" id="view-outbox">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Deliveries</h2>
+              <div class="panel-actions">
+                <button id="outbox-refresh" class="btn-sm">Refresh</button>
+              </div>
+            </div>
+            <table class="jobs-table">
+              <thead>
+                <tr><th>When</th><th>Cinema</th><th>ZIP</th><th>Result</th></tr>
+              </thead>
+              <tbody id="deliveries-tbody"></tbody>
+            </table>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Issued KDMs</h2>
+            </div>
+            <table class="jobs-table">
+              <thead>
+                <tr><th>When</th><th>Title</th><th>Screen</th><th>Recipient</th><th>Window</th><th>Formulation</th><th>File</th></tr>
+              </thead>
+              <tbody id="issues-tbody"></tbody>
+            </table>
+          </section>
+        </div>
+
+        <div class="view" id="view-settings">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Settings</h2>
+            </div>
+            <form id="settings-form" class="settings-grid">
+              <fieldset>
+                <legend>Signer</legend>
+                <div class="prop-field">
+                  <label for="set-signer-certificate">Signer Certificate</label>
+                  <div class="input-with-btn">
+                    <input id="set-signer-certificate" type="text" readonly>
+                    <button type="button" data-browse="set-signer-certificate" data-filter="certificate" class="btn-sm">…</button>
+                  </div>
+                </div>
+                <div class="prop-field">
+                  <label for="set-signer-key">Signer Private Key</label>
+                  <div class="input-with-btn">
+                    <input id="set-signer-key" type="text" readonly>
+                    <button type="button" data-browse="set-signer-key" data-filter="key" class="btn-sm">…</button>
+                  </div>
+                </div>
+                <div class="prop-field">
+                  <label for="set-signer-chain">Signer Chain, intermediate first, one file per line</label>
+                  <textarea id="set-signer-chain" spellcheck="false"></textarea>
+                </div>
+                <div class="prop-field">
+                  <label for="set-dkdm-key">Key the DKDMs Are Addressed To</label>
+                  <div class="input-with-btn">
+                    <input id="set-dkdm-key" type="text" readonly>
+                    <button type="button" data-browse="set-dkdm-key" data-filter="key" class="btn-sm">…</button>
+                  </div>
+                </div>
+                <div class="prop-field">
+                  <label for="set-creation-facility">Creation Facility Code</label>
+                  <input id="set-creation-facility" type="text" maxlength="3" spellcheck="false">
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Email</legend>
+                <div class="prop-field">
+                  <label for="set-smtp-host">SMTP Server</label>
+                  <input id="set-smtp-host" type="text" spellcheck="false" placeholder="Leave empty to write KDMs only">
+                </div>
+                <div class="prop-field">
+                  <label for="set-smtp-port">Port</label>
+                  <input id="set-smtp-port" type="number" min="1" max="65535">
+                </div>
+                <div class="prop-field">
+                  <label for="set-smtp-security">Security</label>
+                  <select id="set-smtp-security">
+                    <option value="tls">TLS</option>
+                    <option value="starttls">STARTTLS</option>
+                    <option value="none">None</option>
+                  </select>
+                </div>
+                <div class="prop-field">
+                  <label for="set-smtp-username">User</label>
+                  <input id="set-smtp-username" type="text" spellcheck="false" autocomplete="off">
+                </div>
+                <div class="prop-field">
+                  <label for="set-smtp-password">Password</label>
+                  <input id="set-smtp-password" type="password" autocomplete="new-password">
+                  <label><input type="checkbox" id="set-smtp-password-clear"> Remove the stored password</label>
+                </div>
+                <div class="prop-field">
+                  <label for="set-smtp-from">From</label>
+                  <input id="set-smtp-from" type="email" spellcheck="false">
+                </div>
+                <div class="prop-field">
+                  <label for="set-smtp-body">Message, {title} and {cinema} are filled in</label>
+                  <textarea id="set-smtp-body"></textarea>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Files</legend>
+                <div class="prop-field">
+                  <label for="set-output-folder">KDM Folder</label>
+                  <div class="input-with-btn">
+                    <input id="set-output-folder" type="text" readonly>
+                    <button type="button" data-browse="set-output-folder" data-filter="folder" class="btn-sm">…</button>
+                  </div>
+                </div>
+                <div class="prop-field">
+                  <label for="set-database-path">Database</label>
+                  <input id="set-database-path" type="text" spellcheck="false">
+                </div>
+              </fieldset>
+              <div class="form-actions">
+                <button type="submit" class="btn-primary">Save</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
