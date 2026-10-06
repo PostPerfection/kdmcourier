@@ -28,6 +28,7 @@ pub struct BookingRow {
     pub end: NaiveDateTime,
     pub formulation: Option<KdmFormulation>,
     pub screens: Vec<BookedScreen>,
+    pub needs_reissue: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -36,6 +37,16 @@ pub struct NewBooking {
     pub title_id: TitleId,
     pub screen_ids: Vec<ScreenId>,
     // wall clock times, read in each cinema's own time zone
+    pub start: NaiveDateTime,
+    pub end: NaiveDateTime,
+    pub formulation: Option<KdmFormulation>,
+}
+
+// the title stays, a different title is a different booking
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookingChange {
+    pub screen_ids: Vec<ScreenId>,
     pub start: NaiveDateTime,
     pub end: NaiveDateTime,
     pub formulation: Option<KdmFormulation>,
@@ -77,6 +88,7 @@ pub fn list(database: &DistributionDatabase) -> Result<Vec<BookingRow>, String> 
                     .into_iter()
                     .filter_map(screen_names)
                     .collect(),
+                needs_reissue: booking.needs_reissue,
             })
         })
         .collect()
@@ -96,6 +108,22 @@ pub fn add(
         },
         booking.formulation,
         now,
+    )
+}
+
+pub fn update(
+    database: &mut DistributionDatabase,
+    id: BookingId,
+    change: BookingChange,
+) -> Result<(), String> {
+    database.update_booking(
+        id,
+        &change.screen_ids,
+        LocalWindow {
+            start: change.start,
+            end: change.end,
+        },
+        change.formulation,
     )
 }
 
@@ -147,6 +175,20 @@ pub fn bookings_add(
 }
 
 #[tauri::command(async)]
+pub fn bookings_update(
+    id: BookingId,
+    change: BookingChange,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state.with_database(|database| update(database, id, change))
+}
+
+#[tauri::command(async)]
+pub fn bookings_remove(id: BookingId, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.with_database(|database| database.remove_booking(id))
+}
+
+#[tauri::command(async)]
 pub fn bookings_plan(
     id: BookingId,
     state: tauri::State<'_, AppState>,
@@ -194,6 +236,45 @@ mod tests {
             .map(|screen| (screen.cinema.as_str(), screen.screen.as_str()))
             .collect();
         assert_eq!(names, vec![("Rex", "1"), ("Rex", "2")]);
+    }
+
+    #[test]
+    fn an_issued_booking_edited_lists_as_needing_a_reissue_and_removal_keeps_the_outbox() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut database, booking) = booked_database(fixtures());
+        let settings = signed_settings(fixtures(), directory.path());
+        issue(
+            &mut database,
+            &settings,
+            directory.path(),
+            booking,
+            None,
+            false,
+            Utc::now(),
+        )
+        .unwrap();
+        let row = list(&database).unwrap().remove(0);
+        assert!(!row.needs_reissue);
+        update(
+            &mut database,
+            booking,
+            BookingChange {
+                screen_ids: vec![row.screens[0].id],
+                start: row.start,
+                end: row.end + chrono::Duration::hours(2),
+                formulation: None,
+            },
+        )
+        .unwrap();
+        let edited = list(&database).unwrap().remove(0);
+        assert!(edited.needs_reissue);
+        assert_eq!(edited.screens.len(), 1);
+
+        database.remove_booking(booking).unwrap();
+        assert!(list(&database).unwrap().is_empty());
+        let outbox = crate::outbox::outbox(&database).unwrap();
+        assert_eq!(outbox.issues.len(), 2);
+        assert_eq!(outbox.deliveries.len(), 1);
     }
 
     #[test]

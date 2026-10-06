@@ -13,6 +13,10 @@
   padding-left: 16px;
   font-size: 12px;
 }
+/* a refusal quotes whole distinguished names */
+.notes li {
+  overflow-wrap: anywhere;
+}
 .screen-picker {
   max-height: 220px;
   overflow-y: auto;

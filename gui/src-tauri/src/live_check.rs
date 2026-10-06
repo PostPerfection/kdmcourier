@@ -174,6 +174,32 @@ fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
     assert_eq!(outbox["issues"].as_array().unwrap().len(), 2);
     assert_eq!(outbox["deliveries"].as_array().unwrap().len(), 1);
 
+    let rex_screens: Vec<Value> = cinemas[1]["screens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|screen| screen["id"].clone())
+        .collect();
+    let _: Value = invoke(
+        &webview,
+        "bookings_update",
+        json!({ "id": booking, "change": {
+            "screenIds": rex_screens,
+            "start": window.start.format(LOCAL_TIME_FORMAT).to_string(),
+            "end": window.end.format(LOCAL_TIME_FORMAT).to_string(),
+            "formulation": "modified-transitional-1"
+        }}),
+    )
+    .unwrap();
+    let bookings: Value = invoke(&webview, "bookings_list", json!({})).unwrap();
+    assert_eq!(bookings[0]["needsReissue"], json!(true));
+    assert_eq!(bookings[0]["screens"].as_array().unwrap().len(), 2);
+    let _: Value = invoke(&webview, "bookings_remove", json!({ "id": booking })).unwrap();
+    let bookings: Value = invoke(&webview, "bookings_list", json!({})).unwrap();
+    assert_eq!(bookings, json!([]));
+    let outbox: Value = invoke(&webview, "outbox_list", json!({})).unwrap();
+    assert_eq!(outbox["issues"].as_array().unwrap().len(), 2);
+
     let refused: Value = invoke::<Value>(
         &webview,
         "cinemas_update",

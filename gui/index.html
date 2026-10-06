@@ -77,7 +77,7 @@
         <div class="view" id="view-bookings">
           <section class="panel">
             <div class="panel-header">
-              <h2>New Booking</h2>
+              <h2 id="booking-form-title">New Booking</h2>
             </div>
             <form id="booking-form" class="settings-grid">
               <fieldset>
@@ -110,7 +110,8 @@
               </fieldset>
               <div class="form-actions">
                 <span id="booking-error" class="error-text"></span>
-                <button type="submit" class="btn-primary">Book</button>
+                <button type="button" id="booking-cancel-edit" class="btn-secondary" hidden>Cancel</button>
+                <button type="submit" id="booking-submit" class="btn-primary">Book</button>
               </div>
             </form>
           </section>
@@ -120,7 +121,7 @@
             </div>
             <table class="jobs-table">
               <thead>
-                <tr><th>Title</th><th>Start</th><th>End</th><th>Screens</th><th></th></tr>
+                <tr><th>Title</th><th>Start</th><th>End</th><th>Screens</th><th>State</th><th></th></tr>
               </thead>
               <tbody id="bookings-tbody"></tbody>
             </table>
@@ -131,7 +132,7 @@
               <div class="panel-actions">
                 <label><input type="checkbox" id="issue-email"> Email one ZIP per cinema</label>
                 <button id="issue-folder" class="btn-sm" title="The folder the KDMs and ZIPs are written to">Folder…</button>
-                <span id="issue-folder-path" class="path-display"></span>
+                <input type="text" id="issue-folder-path" spellcheck="false" placeholder="KDM folder from Settings">
                 <button id="issue-run" class="btn-sm btn-primary">Issue</button>
               </div>
             </div>

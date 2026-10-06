@@ -34,6 +34,8 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         cinemas::history_import_dcpwizard,
         bookings::bookings_list,
         bookings::bookings_add,
+        bookings::bookings_update,
+        bookings::bookings_remove,
         bookings::bookings_plan,
         bookings::bookings_issue,
         outbox::outbox_list,
