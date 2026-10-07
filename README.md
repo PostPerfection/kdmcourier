@@ -2,6 +2,14 @@
 
 KDM Courier gets a working KDM to every screen a distributor books a film into. It holds a DKDM per composition, imports cinemas from Facility List Messages, checks every certificate before a KDM is written, and writes or emails one ZIP per cinema with a record of each KDM. It is a thin Tauri app over postkit's `kdm_distribution`, where all of the KDM logic lives.
 
+## Install
+
+Download a package from the [latest release](https://github.com/PostPerfection/kdmcourier/releases/latest).
+
+- Linux (x86_64): `sudo apt install ./KDM.Courier_*_amd64.deb` on Debian and Ubuntu, `sudo dnf install ./KDM.Courier-*.x86_64.rpm` on Fedora. The `.AppImage` needs `chmod +x` before it runs.
+- macOS (Apple Silicon): open the `.dmg` and drag KDM Courier to Applications. The app is not notarized, so macOS blocks the first launch. Open System Settings, Privacy & Security, and click Open Anyway beside the KDM Courier message.
+- Windows (x86_64): run the `-setup.exe` or the `.msi`. The installers are unsigned, so SmartScreen may stop them: click More info, then Run anyway.
+
 ## Build
 
 Linux only for now. The submodules come first:
@@ -41,4 +49,4 @@ The icons come from `gui/icon-source/kdmcourier.svg`: `pnpm tauri icon icon-sour
 5. Outbox: every KDM issued and every ZIP written or emailed, with its title and the SMTP result. Resend mails a ZIP again to the cinema's addresses as they are now.
 6. Expiry: each recipient certificate, authorized device certificate and DKDM that expires before a running booking ends, and the signer chain's certificates with the bookings that end after them.
 
-Settings are kept in `~/.config/kdmcourier/settings.json`, readable by the user only, with the SMTP password in it, as DCP Wizard keeps its SMTP file. The page never receives the password. The database is `~/.local/share/kdmcourier/kdmcourier.sqlite` unless Settings names another, and ZIPs go to `~/.local/share/kdmcourier/outbox` unless a folder is chosen. `XDG_CONFIG_HOME` and `XDG_DATA_HOME` move them.
+Settings are kept in `kdmcourier/settings.json` under `~/.config` on Linux, `~/Library/Application Support` on macOS and `%APPDATA%` on Windows, with the SMTP password in it, as DCP Wizard keeps its SMTP file. On Linux and macOS the file is readable by the user only. The page never receives the password. The database is `kdmcourier/kdmcourier.sqlite` under `~/.local/share` on Linux and the same folder as the settings on macOS and Windows, unless Settings names another. ZIPs go to `kdmcourier/outbox` beside it unless a folder is chosen. `XDG_CONFIG_HOME` moves the settings, and on Linux `XDG_DATA_HOME` moves the database and ZIPs.

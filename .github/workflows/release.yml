@@ -1,0 +1,198 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: Linux
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+
+    runs-on: ${{ matrix.os }}
+    name: Bundle (${{ matrix.name }})
+
+    steps:
+      - name: Enable long paths (Windows)
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
+        with:
+          version: 11.8.0
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxml2-dev libssl-dev libxerces-c-dev libasound2-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm2cpio cpio
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake openssl xerces-c
+          echo "OPENSSL_DIR=$(brew --prefix openssl)" >> $GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix xerces-c):$(brew --prefix openssl)" >> $GITHUB_ENV
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+          # vcpkg never retries a curl 56 or 503 from github's archive host
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            vcpkg install xerces-c:x64-windows openssl:x64-windows libxml2:x64-windows
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 5) { throw "vcpkg install failed after $attempt attempts" }
+            Start-Sleep -Seconds (30 * $attempt)
+          }
+          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          echo "CMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake" >> $env:GITHUB_ENV
+          echo "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" >> $env:GITHUB_PATH
+
+      # postkit links ffmpeg
+      - uses: PostPerfection/ffmpeg-mpv-builds@v1.0.0
+        with:
+          release: v1.0.0
+
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: pnpm install --frozen-lockfile
+
+      # copies every dll the exe imports from outside System32, VC++ runtime included
+      - name: Stage dlls (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pnpm --dir gui build
+          cargo build --release --manifest-path gui/src-tauri/Cargo.toml
+          Copy-Item gui/src-tauri/target/release/kdmcourier-gui.exe gui/src-tauri/
+          ./scripts/stage-windows-dlls.ps1 -Binary gui/src-tauri/kdmcourier-gui.exe -SearchDirectories "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin", "$env:FFMPEG_MPV_DIR/bin"
+          Remove-Item gui/src-tauri/kdmcourier-gui.exe
+          $dlls = @(Get-ChildItem gui/src-tauri/*.dll | ForEach-Object Name)
+          $dlls
+          # a tauri.windows.conf.json glob would fail every build that has no dlls staged
+          ConvertTo-Json @{ bundle = @{ resources = $dlls } } -Depth 3 | Set-Content "$env:RUNNER_TEMP/staged-dlls.json"
+          Get-Content "$env:RUNNER_TEMP/staged-dlls.json"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui
+          # a dispatch run builds the bundles as workflow artifacts and publishes nothing
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('KDM Courier {0}', github.ref_name) || '' }}
+          uploadWorkflowArtifacts: ${{ github.ref_type != 'tag' }}
+          releaseDraft: false
+          prerelease: false
+          args: ${{ runner.os == 'Windows' && format('--config {0}/staged-dlls.json', runner.temp) || '' }}
+
+      # ffmpeg-mpv-builds exports LD_LIBRARY_PATH, which would hide a library the package does not carry
+      - name: The packages load only system libraries (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=gui/src-tauri/target/release/bundle
+          binary=usr/bin/kdmcourier-gui
+
+          check_binary() {
+            local libraries
+            libraries=$(env -u LD_LIBRARY_PATH ldd "$1")
+            echo "$libraries"
+            if echo "$libraries" | grep -F "not found"; then
+              echo "$1 has an unresolved library"
+              exit 1
+            fi
+            if echo "$libraries" | grep -F -e "$GITHUB_WORKSPACE" -e "$RUNNER_TEMP"; then
+              echo "$1 loads a library from the build tree"
+              exit 1
+            fi
+          }
+
+          appimage=$(realpath "$(find "$bundle/appimage" -name '*.AppImage' -print -quit)")
+          appimage_root=$(mktemp -d)
+          (cd "$appimage_root" && "$appimage" --appimage-extract >/dev/null)
+          check_binary "$appimage_root/squashfs-root/$binary"
+
+          deb=$(find "$bundle/deb" -name '*.deb' -print -quit)
+          dpkg-deb -f "$deb" Depends
+          deb_root=$(mktemp -d)
+          dpkg-deb -x "$deb" "$deb_root"
+          check_binary "$deb_root/$binary"
+
+          rpm=$(realpath "$(find "$bundle/rpm" -name '*.rpm' -print -quit)")
+          rpm_root=$(mktemp -d)
+          (cd "$rpm_root" && rpm2cpio "$rpm" | cpio -idm --quiet)
+          check_binary "$rpm_root/$binary"
+
+      # ffmpeg-mpv-builds exports DYLD_LIBRARY_PATH, which would hide a library the .app does not carry
+      - name: The app loads only system libraries (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=gui/src-tauri/target/release/bundle
+          ls -la "$bundle/macos" "$bundle/dmg"
+          if [ -z "$(find "$bundle/dmg" -name '*.dmg' -print -quit)" ]; then
+            echo "no dmg under $bundle/dmg"
+            exit 1
+          fi
+          app=$(find "$bundle/macos" -maxdepth 1 -name '*.app' -print -quit)
+          if [ -z "$app" ]; then
+            echo "no .app under $bundle/macos"
+            exit 1
+          fi
+          binary="$app/Contents/MacOS/kdmcourier-gui"
+          otool -L "$binary"
+          # the .app carries no libraries, so an @rpath, Homebrew or runner path is one it cannot load
+          if otool -L "$binary" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/)'; then
+            echo "$binary loads a library from outside the system"
+            exit 1
+          fi
+          # a missing dylib kills the app at exec, so it has to be alive a few seconds later
+          env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$binary" &
+          app_pid=$!
+          sleep 8
+          kill -0 "$app_pid"
+          kill "$app_pid"
+
+      - name: The installer carries its dlls (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $installer = Get-ChildItem "gui/src-tauri/target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if ($null -eq $installer) { throw "NSIS installer not found" }
+          if ($null -eq (Get-ChildItem "gui/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1)) { throw "msi not found" }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)" }
+          $entry = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+            Where-Object { $_.DisplayName -eq "KDM Courier" } |
+            Select-Object -First 1
+          if ($null -eq $entry) { throw "Installed application was not registered" }
+          $installDirectory = $entry.InstallLocation.Trim('"')
+          Get-ChildItem $installDirectory
+          if (-not (Test-Path (Join-Path $installDirectory "kdmcourier-gui.exe"))) { throw "the installer does not carry kdmcourier-gui.exe" }
+          foreach ($dll in Get-ChildItem gui/src-tauri/*.dll) {
+            if (-not (Test-Path (Join-Path $installDirectory $dll.Name))) { throw "the installer does not carry $($dll.Name)" }
+          }

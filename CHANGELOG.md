@@ -3,6 +3,7 @@
 ## Unreleased
 
 - A booking whose window ends within 3 days at any of its cinemas shows "ends in 2 days", or hours under a day, in the Bookings State column, and each cinema shows how many of its bookings end soon, so a holdover can be booked by extending the end date, which marks the issued screens for reissue.
+- Releases ship Linux (AppImage, deb, rpm), macOS (.app in a dmg) and Windows (NSIS and msi) bundles.
 - A cinema with booked screens that need a KDM shows their count and an Issue pending button. It plans every booking's pending screens at that cinema, shows each booking's plan in the cinema's block, and Issue writes one ZIP per booking to the KDM folder from Settings and emails it when asked. A booking that fails is listed with its title and error, and the others still issue.
 - Re-importing an FLM for a known cinema lists each screen added, removed, or with a changed recipient or authorized device certificate, and the bookings whose issued KDMs no longer match, which then need issuing again.
 - The Outbox lists each delivery's title, and Resend mails a delivery's ZIP again to the cinema's addresses as they are now, recorded as a new delivery with its SMTP result. It needs an SMTP server in Settings and the ZIP still on disk.
