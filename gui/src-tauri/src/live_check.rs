@@ -19,7 +19,7 @@ fn invoke<T: DeserializeOwned>(
         cmd: command.into(),
         callback: tauri::ipc::CallbackFn(0),
         error: tauri::ipc::CallbackFn(1),
-        url: "tauri://localhost".parse().unwrap(),
+        url: webview.url().unwrap(),
         body: tauri::ipc::InvokeBody::Json(arguments),
         headers: Default::default(),
         invoke_key: tauri::test::INVOKE_KEY.to_string(),

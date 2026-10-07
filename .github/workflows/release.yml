@@ -118,10 +118,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: gui
-          # a dispatch run builds the bundles as workflow artifacts and publishes nothing
+          # a dispatch run publishes nothing
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('KDM Courier {0}', github.ref_name) || '' }}
-          uploadWorkflowArtifacts: ${{ github.ref_type != 'tag' }}
           releaseDraft: false
           prerelease: false
           args: ${{ runner.os != 'Linux' && format('--config {0}/bundle-libraries.json', runner.temp) || '' }}
@@ -238,3 +237,17 @@ jobs:
           foreach ($dll in Get-ChildItem gui/src-tauri/*.dll) {
             if (-not (Test-Path (Join-Path $installDirectory $dll.Name))) { throw "the installer does not carry $($dll.Name)" }
           }
+
+      - name: Upload the bundles (dispatch)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kdmcourier-${{ matrix.name }}
+          path: |
+            gui/src-tauri/target/release/bundle/appimage/*.AppImage
+            gui/src-tauri/target/release/bundle/deb/*.deb
+            gui/src-tauri/target/release/bundle/rpm/*.rpm
+            gui/src-tauri/target/release/bundle/dmg/*.dmg
+            gui/src-tauri/target/release/bundle/nsis/*-setup.exe
+            gui/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
