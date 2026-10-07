@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { certificateStatusText, devicesText, emailsFromText } from '../src/cinema-rows.js';
+import { certificateStatusText, cinemaPendingText, devicesText, emailsFromText } from '../src/cinema-rows.js';
 
 test('addresses split on commas, spaces and new lines', () => {
   assert.deepEqual(emailsFromText('kdm@rex.test, booth@rex.test\nops@rex.test;'), ['kdm@rex.test', 'booth@rex.test', 'ops@rex.test']);
@@ -20,4 +20,10 @@ test('a failing chain shows its first rule failure and how many more there are',
     notAfter: '',
   };
   assert.equal(certificateStatusText(failing), 'Rex / 1: recipient certificate CN=LD: ST 430-2 rule 8 (role): no SM (and 1 more)');
+});
+
+test('a cinema counts its booked screens that need a KDM', () => {
+  assert.equal(cinemaPendingText(0), '');
+  assert.equal(cinemaPendingText(1), '1 booked screen needs a KDM');
+  assert.equal(cinemaPendingText(3), '3 booked screens need a KDM');
 });

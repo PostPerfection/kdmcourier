@@ -22,6 +22,9 @@
         <button class="sidebar-btn" data-view="outbox" title="Outbox">
           <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
         </button>
+        <button class="sidebar-btn" data-view="expiry" title="Expiry">
+          <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+        </button>
       </div>
       <div class="sidebar-bottom">
         <button class="sidebar-btn" data-view="settings" title="Settings">
@@ -133,7 +136,8 @@
                 <label><input type="checkbox" id="issue-email"> Email one ZIP per cinema</label>
                 <button id="issue-folder" class="btn-sm" title="The folder the KDMs and ZIPs are written to">Folder…</button>
                 <input type="text" id="issue-folder-path" spellcheck="false" placeholder="KDM folder from Settings">
-                <button id="issue-run" class="btn-sm btn-primary">Issue</button>
+                <button id="issue-run" class="btn-sm btn-primary" title="The screens that need a KDM">Issue</button>
+                <button id="issue-run-all" class="btn-sm" title="Every booked screen, each gets a new KDM">Issue all again</button>
               </div>
             </div>
             <p id="booking-plan-notes" class="notes"></p>
@@ -157,7 +161,7 @@
             </div>
             <table class="jobs-table">
               <thead>
-                <tr><th>When</th><th>Cinema</th><th>ZIP</th><th>Result</th></tr>
+                <tr><th>When</th><th>Title</th><th>Cinema</th><th>ZIP</th><th>Result</th><th></th></tr>
               </thead>
               <tbody id="deliveries-tbody"></tbody>
             </table>
@@ -171,6 +175,36 @@
                 <tr><th>When</th><th>Title</th><th>Screen</th><th>Recipient</th><th>Window</th><th>Formulation</th><th>File</th></tr>
               </thead>
               <tbody id="issues-tbody"></tbody>
+            </table>
+          </section>
+        </div>
+
+        <div class="view" id="view-expiry">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Expiring Before the Booking Ends</h2>
+              <div class="panel-actions">
+                <button id="expiry-refresh" class="btn-sm">Refresh</button>
+              </div>
+            </div>
+            <p id="expiry-empty" class="notes" hidden>Nothing expires before its booking ends.</p>
+            <table class="jobs-table">
+              <thead>
+                <tr><th>Title</th><th>Cinema</th><th>Screen</th><th>What expires</th><th>Subject</th><th>Expires</th><th>Booking ends</th></tr>
+              </thead>
+              <tbody id="expiry-bookings-tbody"></tbody>
+            </table>
+            <ul id="expiry-not-checked" class="notes"></ul>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Signer Chain</h2>
+            </div>
+            <table class="jobs-table">
+              <thead>
+                <tr><th>Subject</th><th>Expires</th><th>Bookings ending after it</th></tr>
+              </thead>
+              <tbody id="expiry-signer-tbody"></tbody>
             </table>
           </section>
         </div>

@@ -81,7 +81,7 @@ pub fn fixtures() -> &'static Fixtures {
                 distributor.join("intermediate.pem"),
                 distributor.join("root.pem"),
             ],
-            security_managers: (1..=2)
+            security_managers: (1..=3)
                 .map(|index| {
                     leaf(
                         &vendor,
@@ -95,6 +95,27 @@ pub fn fixtures() -> &'static Fixtures {
             _directory: directory,
         }
     })
+}
+
+pub fn short_lived_security_manager(directory: &Path, validity_days: u32) -> Device {
+    let f = fixtures();
+    let device = Device {
+        certificate: directory.join("short-lived.pem"),
+        key: directory.join("short-lived.key"),
+    };
+    let options = CertOptions {
+        cert_type: CertType::Leaf,
+        common_name: format!("SM.{VENDOR}.IMB.1009"),
+        organization: VENDOR.to_string(),
+        validity_days,
+        output_cert: device.certificate.clone(),
+        output_key: device.key.clone(),
+        issuer_cert: f.vendor_intermediate.clone(),
+        issuer_key: f.vendor_intermediate.with_extension("key"),
+        ..Default::default()
+    };
+    assert_eq!(generate_certificate(&options), 0, "short-lived certificate");
+    device
 }
 
 fn read(path: &Path) -> String {
@@ -178,8 +199,22 @@ fn device_xml(f: &Fixtures, device_type: &str, serial: &str, leaf: &Path) -> Str
 
 // a ST 430-16 facility: auditorium 1 is an SM with a link decryptor and projector, auditorium 2 an SM
 pub fn extended_flm(f: &Fixtures, facility_name: &str, time_zone: &str) -> String {
+    extended_flm_with_first_recipient(
+        f,
+        facility_name,
+        time_zone,
+        &f.security_managers[0].certificate,
+    )
+}
+
+pub fn extended_flm_with_first_recipient(
+    f: &Fixtures,
+    facility_name: &str,
+    time_zone: &str,
+    first_recipient: &Path,
+) -> String {
     let first_suite = [
-        device_xml(f, "SM", "1001", &f.security_managers[0].certificate),
+        device_xml(f, "SM", "1001", first_recipient),
         device_xml(f, "LD", "2001", &f.link_decryptor.certificate),
         device_xml(f, "PR", "3001", &f.projector.certificate),
     ]
@@ -233,7 +268,8 @@ pub fn booked_database(f: &Fixtures) -> (DistributionDatabase, BookingId) {
     let mut database = DistributionDatabase::open_in_memory().unwrap();
     let cinema = database
         .save_cinema(&read_flm_cinema(&flm).unwrap())
-        .unwrap();
+        .unwrap()
+        .cinema_id;
     let screens = database.cinema(cinema).unwrap().screen_ids;
     let title = database
         .add_title_from_dkdm(&dkdm(f, DCNC_TITLE, 30))

@@ -28,3 +28,19 @@ export function deliveryText(delivery) {
       return 'written to the folder, not emailed';
   }
 }
+
+export function issuedStatus(outcomes) {
+  const zips = outcomes.reduce((total, outcome) => total + outcome.bundles.length, 0);
+  const refused = outcomes.reduce((total, outcome) => total + outcome.refused.length, 0);
+  return `Issued ${zips} ZIP(s), ${refused} screen(s) refused`;
+}
+
+export function cinemaIssueStatus(result) {
+  const issued = issuedStatus(result.issued.map((booking) => booking.outcome));
+  if (result.failed.length === 0) return issued;
+  return `${issued}, ${result.failed.length} booking(s) failed`;
+}
+
+export function failedBookingText(booking) {
+  return `${booking.contentTitle}: ${booking.error}`;
+}

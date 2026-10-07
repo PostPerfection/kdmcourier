@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bookingChange, bookingFields, bookingLocalTime, bookingStateText, newBooking, planRows } from '../src/booking-form.js';
+import {
+  bookedScreenText,
+  bookingChange,
+  bookingFields,
+  bookingLocalTime,
+  bookingPendingText,
+  newBooking,
+  planRows,
+  planScope,
+} from '../src/booking-form.js';
 
 test('a datetime-local value gains seconds and an empty one is no time', () => {
   assert.equal(bookingLocalTime('2026-11-01T18:00'), '2026-11-01T18:00:00');
@@ -39,14 +48,13 @@ test('an edit sends the screens, window and formulation and keeps the title', ()
   assert.equal(bookingChange({ screenIds: [], start: '2026-11-01T18:00', end: '2026-11-09T23:00', formulation: '' }).error, 'Pick at least one screen');
 });
 
-test('a stored booking fills the form to the minute and says when it needs issuing again', () => {
+test('a stored booking fills the form to the minute', () => {
   const booking = {
     titleId: 3,
     screens: [{ id: 1 }, { id: 4 }],
     start: '2026-11-01T18:00:00',
     end: '2026-11-08T23:00:00',
     formulation: null,
-    needsReissue: true,
   };
   assert.deepEqual(bookingFields(booking), {
     titleId: '3',
@@ -55,6 +63,23 @@ test('a stored booking fills the form to the minute and says when it needs issui
     end: '2026-11-08T23:00',
     formulation: '',
   });
-  assert.equal(bookingStateText(booking), 'edited since its KDMs were issued, issue again');
-  assert.equal(bookingStateText({ ...booking, needsReissue: false }), '');
+});
+
+const screen = (name, pending) => ({ id: Number(name), cinema: 'Rex', screen: name, pending });
+
+test('a booking counts the screens that need a KDM and says nothing when none do', () => {
+  assert.equal(bookingPendingText({ screens: [screen('1', true), screen('2', true), screen('3', false)] }), '2 of 3 screens need a KDM');
+  assert.equal(bookingPendingText({ screens: [screen('1', true), screen('2', false)] }), '1 of 2 screens needs a KDM');
+  assert.equal(bookingPendingText({ screens: [screen('1', true)] }), '1 of 1 screen needs a KDM');
+  assert.equal(bookingPendingText({ screens: [screen('1', false), screen('2', false)] }), '');
+});
+
+test('Check plans the pending screens, or every screen once none are pending', () => {
+  assert.equal(planScope({ screens: [screen('1', false), screen('2', true)] }), 'pendingScreens');
+  assert.equal(planScope({ screens: [screen('1', false), screen('2', false)] }), 'allScreens');
+});
+
+test('a pending screen is marked in the screens list', () => {
+  assert.equal(bookedScreenText(screen('1', true)), 'Rex / 1 (needs a KDM)');
+  assert.equal(bookedScreenText(screen('2', false)), 'Rex / 2');
 });

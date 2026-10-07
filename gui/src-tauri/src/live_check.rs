@@ -120,7 +120,12 @@ fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
     )
     .unwrap();
 
-    let plan: Value = invoke(&webview, "bookings_plan", json!({ "id": booking })).unwrap();
+    let plan: Value = invoke(
+        &webview,
+        "bookings_plan",
+        json!({ "id": booking, "scope": "pendingScreens" }),
+    )
+    .unwrap();
     let planned = plan["screens"].as_array().unwrap();
     let planned_for = |cinema: &str, screen: &str| {
         planned
@@ -140,7 +145,9 @@ fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
     let issued: Value = invoke(
         &webview,
         "bookings_issue",
-        json!({ "id": booking, "outputFolder": output, "sendEmail": false }),
+        json!({
+            "id": booking, "scope": "pendingScreens", "outputFolder": output, "sendEmail": false
+        }),
     )
     .unwrap();
     let outcome = &issued["outcome"];
@@ -192,8 +199,14 @@ fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
     )
     .unwrap();
     let bookings: Value = invoke(&webview, "bookings_list", json!({})).unwrap();
-    assert_eq!(bookings[0]["needsReissue"], json!(true));
-    assert_eq!(bookings[0]["screens"].as_array().unwrap().len(), 2);
+    let screens = bookings[0]["screens"].as_array().unwrap();
+    assert_eq!(screens.len(), 2);
+    assert!(
+        screens
+            .iter()
+            .all(|screen| screen["pending"] == json!(true)),
+        "a new formulation needs both issued screens reissued: {screens:?}"
+    );
     let _: Value = invoke(&webview, "bookings_remove", json!({ "id": booking })).unwrap();
     let bookings: Value = invoke(&webview, "bookings_list", json!({})).unwrap();
     assert_eq!(bookings, json!([]));

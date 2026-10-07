@@ -2,7 +2,8 @@ use crate::state::AppState;
 use postkit::certificate::cert_info_from_pem;
 use postkit::kdm_distribution::cinema::{read_flm_cinema, CinemaDb, Screen};
 use postkit::kdm_distribution::database::{
-    CinemaId, DistributionDatabase, ImportReport, ScreenId, StoredCinema,
+    CinemaId, CinemaSaveReport, DistributionDatabase, ImportReport, ScreenChange, ScreenId,
+    StoredCinema,
 };
 use postkit::kdm_distribution::history;
 use postkit::kdm_distribution::screen_checks::check_screen_certificates;
@@ -46,6 +47,8 @@ pub struct CinemaRow {
     pub time_zone: Option<String>,
     pub emails: Vec<String>,
     pub screens: Vec<ScreenRow>,
+    // booked screens across every booking that need a KDM issued
+    pub pending_screens: usize,
 }
 
 fn certificate_status(
@@ -67,7 +70,11 @@ fn certificate_status(
     }
 }
 
-fn cinema_row(stored: StoredCinema, now: chrono::DateTime<chrono::Utc>) -> CinemaRow {
+fn cinema_row(
+    stored: StoredCinema,
+    pending_screens: usize,
+    now: chrono::DateTime<chrono::Utc>,
+) -> CinemaRow {
     let screens = stored
         .cinema
         .screens
@@ -99,6 +106,7 @@ fn cinema_row(stored: StoredCinema, now: chrono::DateTime<chrono::Utc>) -> Cinem
         time_zone: stored.cinema.time_zone,
         emails: stored.cinema.emails,
         screens,
+        pending_screens,
     }
 }
 
@@ -106,28 +114,88 @@ pub fn list(
     database: &DistributionDatabase,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<CinemaRow>, String> {
-    Ok(database
+    database
         .cinemas()?
         .into_iter()
-        .map(|stored| cinema_row(stored, now))
-        .collect())
+        .map(|stored| {
+            let pending: usize = database
+                .pending_screens_at_cinema(stored.id)?
+                .iter()
+                .map(|booking| booking.screen_ids.len())
+                .sum();
+            Ok(cinema_row(stored, pending, now))
+        })
+        .collect()
 }
 
-// one line per file, the cinema and its screen count or why it was not imported
+// one line per changed screen, then the bookings to reissue
+fn save_report_lines(
+    database: &DistributionDatabase,
+    cinema: &str,
+    report: &CinemaSaveReport,
+) -> Result<Vec<String>, String> {
+    let mut lines: Vec<String> = report
+        .screens
+        .iter()
+        .map(|change| match change {
+            ScreenChange::Added { screen } => format!("{cinema} / {screen}: new screen"),
+            ScreenChange::Removed { screen } => format!("{cinema} / {screen}: removed"),
+            ScreenChange::CertificatesChanged {
+                screen,
+                recipient,
+                devices_changed,
+            } => {
+                let mut changes = Vec::new();
+                if let Some(replacement) = recipient {
+                    changes.push(format!(
+                        "recipient certificate replaced, {} became {}",
+                        replacement.old_thumbprint, replacement.new_thumbprint
+                    ));
+                }
+                if *devices_changed {
+                    changes.push("authorized device certificates changed".to_string());
+                }
+                format!("{cinema} / {screen}: {}", changes.join(", "))
+            }
+        })
+        .collect();
+    if !report.bookings_to_reissue.is_empty() {
+        let titles = report
+            .bookings_to_reissue
+            .iter()
+            .map(|id| {
+                Ok(database
+                    .title(database.booking(*id)?.title_id)?
+                    .content_title)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        lines.push(format!(
+            "{cinema}: issued KDMs no longer match, reissue {}",
+            titles.join(", ")
+        ));
+    }
+    Ok(lines)
+}
+
+// per file its cinema and screen count or its error, then what changed on a known cinema
 pub fn import_flm(database: &mut DistributionDatabase, paths: &[PathBuf]) -> Vec<String> {
     paths
         .iter()
-        .map(|path| {
+        .flat_map(|path| {
             let imported = read_flm_cinema(path).and_then(|cinema| {
-                database.save_cinema(&cinema)?;
-                Ok(format!(
+                let report = database.save_cinema(&cinema)?;
+                let mut lines = vec![format!(
                     "{}: {} ({} screens)",
                     path.display(),
                     cinema.name,
                     cinema.screens.len()
-                ))
+                )];
+                if !report.created {
+                    lines.extend(save_report_lines(database, &cinema.name, &report)?);
+                }
+                Ok(lines)
             });
-            imported.unwrap_or_else(|error| format!("{}: {error}", path.display()))
+            imported.unwrap_or_else(|error| vec![format!("{}: {error}", path.display())])
         })
         .collect()
 }
@@ -209,7 +277,155 @@ pub fn history_import_dcpwizard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{extended_flm, fixtures, SMPTE_EXAMPLE_FLM};
+    use crate::bookings::{issue, issue_cinema_pending, IssueDestination};
+    use crate::test_fixtures::{
+        dkdm, extended_flm, extended_flm_with_first_recipient, fixtures, local_window,
+        signed_settings, DCNC_TITLE, SMPTE_EXAMPLE_FLM,
+    };
+    use chrono::Utc;
+    use postkit::kdm_distribution::database::IssueScope;
+
+    fn pending_by_screen(database: &DistributionDatabase) -> Vec<(String, bool)> {
+        crate::bookings::list(database).unwrap()[0]
+            .screens
+            .iter()
+            .map(|screen| {
+                (
+                    format!("{} / {}", screen.cinema, screen.screen),
+                    screen.pending,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reimported_flm_with_a_new_recipient_flags_that_screen_and_issue_writes_one_zip() {
+        let f = fixtures();
+        let directory = tempfile::tempdir().unwrap();
+        let settings = signed_settings(f, directory.path());
+        let rex_flm = directory.path().join("rex.xml");
+        let odeon_flm = directory.path().join("odeon.xml");
+        std::fs::write(&rex_flm, extended_flm(f, "Rex", "Europe/London")).unwrap();
+        std::fs::write(&odeon_flm, extended_flm(f, "Odeon", "America/New_York")).unwrap();
+        let mut database = DistributionDatabase::open_in_memory().unwrap();
+        let lines = import_flm(&mut database, &[rex_flm.clone(), odeon_flm]);
+        assert_eq!(
+            lines.len(),
+            2,
+            "a new cinema lists no screen changes: {lines:?}"
+        );
+        let screens: Vec<ScreenId> = database
+            .cinemas()
+            .unwrap()
+            .iter()
+            .flat_map(|stored| stored.screen_ids.clone())
+            .collect();
+        let title = database
+            .add_title_from_dkdm(&dkdm(f, DCNC_TITLE, 30))
+            .unwrap();
+        let booking = database
+            .add_booking(title, &screens, local_window(), None, Utc::now())
+            .unwrap();
+        let write_only = || IssueDestination {
+            output_folder: None,
+            send_email: false,
+        };
+        let first = issue(
+            &mut database,
+            &settings,
+            directory.path(),
+            booking,
+            IssueScope::PendingScreens,
+            write_only(),
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(first.outcome.bundles.len(), 2);
+
+        let old_thumbprint = database.cinemas().unwrap()[1].cinema.screens[0]
+            .cert_thumbprint
+            .clone();
+        std::fs::write(
+            &rex_flm,
+            extended_flm_with_first_recipient(
+                f,
+                "Rex",
+                "Europe/London",
+                &f.security_managers[2].certificate,
+            ),
+        )
+        .unwrap();
+        let lines = import_flm(&mut database, std::slice::from_ref(&rex_flm));
+        let new_thumbprint = database.cinemas().unwrap()[1].cinema.screens[0]
+            .cert_thumbprint
+            .clone();
+        assert_eq!(
+            lines[1..],
+            [
+                format!(
+                    "Rex / 1: recipient certificate replaced, {old_thumbprint} became {new_thumbprint}"
+                ),
+                format!("Rex: issued KDMs no longer match, reissue {DCNC_TITLE}"),
+            ]
+        );
+        assert_eq!(
+            pending_by_screen(&database),
+            vec![
+                ("Rex / 1".to_string(), true),
+                ("Rex / 2".to_string(), false),
+                ("Odeon / 1".to_string(), false),
+                ("Odeon / 2".to_string(), false),
+            ]
+        );
+        let rows = list(&database, Utc::now()).unwrap();
+        let pending: Vec<(&str, usize)> = rows
+            .iter()
+            .map(|row| (row.name.as_str(), row.pending_screens))
+            .collect();
+        assert_eq!(pending, vec![("Odeon", 0), ("Rex", 1)]);
+
+        let reissued = issue(
+            &mut database,
+            &settings,
+            directory.path(),
+            booking,
+            IssueScope::PendingScreens,
+            write_only(),
+            Utc::now(),
+        )
+        .unwrap();
+        let bundles = &reissued.outcome.bundles;
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].cinema, "Rex");
+        assert_eq!(bundles[0].kdms.len(), 1);
+        assert_eq!(bundles[0].kdms[0].screen, "1");
+        assert_eq!(bundles[0].kdms[0].recipient_thumbprint, new_thumbprint);
+        assert_eq!(reissued.deliveries.len(), 1);
+        assert!(pending_by_screen(&database)
+            .iter()
+            .all(|(_, pending)| !pending));
+
+        std::fs::write(&rex_flm, extended_flm(f, "Rex", "Europe/London")).unwrap();
+        import_flm(&mut database, &[rex_flm]);
+        let rex_id = rows[1].id;
+        let by_cinema = issue_cinema_pending(
+            &mut database,
+            &settings,
+            directory.path(),
+            rex_id,
+            false,
+            Utc::now(),
+        )
+        .unwrap();
+        assert!(by_cinema.failed.is_empty(), "{:?}", by_cinema.failed);
+        let by_cinema = by_cinema.issued;
+        assert_eq!(by_cinema.len(), 1);
+        assert_eq!(by_cinema[0].booking_id, booking);
+        assert_eq!(by_cinema[0].outcome.bundles.len(), 1);
+        assert_eq!(by_cinema[0].outcome.bundles[0].cinema, "Rex");
+        assert_eq!(by_cinema[0].deliveries.len(), 1);
+        assert_eq!(list(&database, Utc::now()).unwrap()[1].pending_screens, 0);
+    }
 
     #[test]
     fn an_flm_import_lists_screens_devices_and_certificate_status() {

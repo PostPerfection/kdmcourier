@@ -20,3 +20,8 @@ export function certificateStatusText(certificate) {
   if (rest.length === 0) return first;
   return `${first} (and ${rest.length} more)`;
 }
+
+export function cinemaPendingText(pendingScreens) {
+  if (pendingScreens === 0) return '';
+  return `${pendingScreens} booked ${pendingScreens === 1 ? 'screen needs' : 'screens need'} a KDM`;
+}

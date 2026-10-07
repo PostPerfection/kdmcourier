@@ -3,8 +3,10 @@ use crate::state::AppState;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use postkit::certificate::KdmFormulation;
 use postkit::kdm_distribution::database::{
-    BookingId, DeliveryRecord, DistributionDatabase, ScreenId, TitleId,
+    BookingId, BookingIssueFailure, CinemaId, DistributionDatabase, IssueScope, ScreenId,
+    StoredDelivery, TitleId,
 };
+use postkit::kdm_distribution::email::SmtpConfig;
 use postkit::kdm_distribution::issue::{DkdmIssueOutcome, IssuePlan};
 use postkit::kdm_distribution::window::LocalWindow;
 use serde::{Deserialize, Serialize};
@@ -16,6 +18,8 @@ pub struct BookedScreen {
     pub id: ScreenId,
     pub cinema: String,
     pub screen: String,
+    // no KDM yet, or the issued one no longer matches the booking or the screen
+    pub pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -28,7 +32,6 @@ pub struct BookingRow {
     pub end: NaiveDateTime,
     pub formulation: Option<KdmFormulation>,
     pub screens: Vec<BookedScreen>,
-    pub needs_reissue: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -52,22 +55,53 @@ pub struct BookingChange {
     pub formulation: Option<KdmFormulation>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueDestination {
+    // None writes to the KDM folder from Settings
+    pub output_folder: Option<PathBuf>,
+    pub send_email: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueResult {
     pub outcome: DkdmIssueOutcome,
-    pub deliveries: Vec<DeliveryRecord>,
+    pub deliveries: Vec<StoredDelivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookingIssueResult {
+    pub booking_id: BookingId,
+    pub content_title: String,
+    pub outcome: DkdmIssueOutcome,
+    pub deliveries: Vec<StoredDelivery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CinemaIssueResult {
+    pub issued: Vec<BookingIssueResult>,
+    pub failed: Vec<BookingIssueFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookingPlanRow {
+    pub booking_id: BookingId,
+    pub plan: IssuePlan,
 }
 
 pub fn list(database: &DistributionDatabase) -> Result<Vec<BookingRow>, String> {
     let cinemas = database.cinemas()?;
-    let screen_names = |id: ScreenId| {
+    let booked_screen = |id: ScreenId, pending: bool| {
         cinemas.iter().find_map(|stored| {
             let index = stored.screen_ids.iter().position(|screen| *screen == id)?;
             Some(BookedScreen {
                 id,
                 cinema: stored.cinema.name.clone(),
                 screen: stored.cinema.screens[index].name.clone(),
+                pending,
             })
         })
     };
@@ -85,10 +119,9 @@ pub fn list(database: &DistributionDatabase) -> Result<Vec<BookingRow>, String> 
                 formulation: booking.formulation,
                 screens: booking
                     .screen_ids
-                    .into_iter()
-                    .filter_map(screen_names)
+                    .iter()
+                    .filter_map(|id| booked_screen(*id, booking.pending_screen_ids.contains(id)))
                     .collect(),
-                needs_reissue: booking.needs_reissue,
             })
         })
         .collect()
@@ -132,10 +165,19 @@ pub fn plan(
     settings: &Settings,
     data_dir: &Path,
     id: BookingId,
+    scope: IssueScope,
     now: DateTime<Utc>,
 ) -> Result<IssuePlan, String> {
     let issue_settings = settings.issue_settings(settings.output_dir(data_dir, None))?;
-    database.plan_booking(id, &issue_settings, now)
+    database.plan_booking(id, scope, &issue_settings, now)
+}
+
+fn email_server(settings: &Settings, send_email: bool) -> Result<Option<&SmtpConfig>, String> {
+    match (send_email, &settings.smtp) {
+        (false, _) => Ok(None),
+        (true, Some(smtp)) => Ok(Some(smtp)),
+        (true, None) => Err("set the SMTP server in Settings before emailing".to_string()),
+    }
 }
 
 pub fn issue(
@@ -143,21 +185,68 @@ pub fn issue(
     settings: &Settings,
     data_dir: &Path,
     id: BookingId,
-    output_folder: Option<PathBuf>,
-    send_email: bool,
+    scope: IssueScope,
+    destination: IssueDestination,
     now: DateTime<Utc>,
 ) -> Result<IssueResult, String> {
-    let smtp = match (send_email, &settings.smtp) {
-        (false, _) => None,
-        (true, Some(smtp)) => Some(smtp),
-        (true, None) => return Err("set the SMTP server in Settings before emailing".to_string()),
-    };
-    let issue_settings = settings.issue_settings(settings.output_dir(data_dir, output_folder))?;
-    let outcome = database.issue_booking(id, &issue_settings, now)?;
+    let smtp = email_server(settings, destination.send_email)?;
+    let issue_settings =
+        settings.issue_settings(settings.output_dir(data_dir, destination.output_folder))?;
+    let outcome = database.issue_booking(id, scope, &issue_settings, now)?;
     let deliveries = database.deliver_bundles(&outcome, Some(id), smtp, now)?;
     Ok(IssueResult {
         outcome,
         deliveries,
+    })
+}
+
+pub fn plan_cinema_pending(
+    database: &DistributionDatabase,
+    settings: &Settings,
+    data_dir: &Path,
+    cinema_id: CinemaId,
+    now: DateTime<Utc>,
+) -> Result<Vec<BookingPlanRow>, String> {
+    let issue_settings = settings.issue_settings(settings.output_dir(data_dir, None))?;
+    Ok(database
+        .plan_cinema_pending(cinema_id, &issue_settings, now)?
+        .into_iter()
+        .map(|planned| BookingPlanRow {
+            booking_id: planned.booking_id,
+            plan: planned.plan,
+        })
+        .collect())
+}
+
+// every booking's pending screens at the cinema, one ZIP per booking
+pub fn issue_cinema_pending(
+    database: &mut DistributionDatabase,
+    settings: &Settings,
+    data_dir: &Path,
+    cinema_id: CinemaId,
+    send_email: bool,
+    now: DateTime<Utc>,
+) -> Result<CinemaIssueResult, String> {
+    let smtp = email_server(settings, send_email)?;
+    let issue_settings = settings.issue_settings(settings.output_dir(data_dir, None))?;
+    let outcome = database.issue_cinema_pending(cinema_id, &issue_settings, now)?;
+    let issued = outcome
+        .issued
+        .into_iter()
+        .map(|issued| {
+            let deliveries =
+                database.deliver_bundles(&issued.outcome, Some(issued.booking_id), smtp, now)?;
+            Ok(BookingIssueResult {
+                booking_id: issued.booking_id,
+                content_title: issued.outcome.content_title.clone(),
+                outcome: issued.outcome,
+                deliveries,
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(CinemaIssueResult {
+        issued,
+        failed: outcome.failed,
     })
 }
 
@@ -191,15 +280,18 @@ pub fn bookings_remove(id: BookingId, state: tauri::State<'_, AppState>) -> Resu
 #[tauri::command(async)]
 pub fn bookings_plan(
     id: BookingId,
+    scope: IssueScope,
     state: tauri::State<'_, AppState>,
 ) -> Result<IssuePlan, String> {
     let settings = state.settings()?;
-    state.with_database(|database| plan(database, &settings, &state.data_dir, id, Utc::now()))
+    state
+        .with_database(|database| plan(database, &settings, &state.data_dir, id, scope, Utc::now()))
 }
 
 #[tauri::command(async)]
 pub fn bookings_issue(
     id: BookingId,
+    scope: IssueScope,
     output_folder: Option<PathBuf>,
     send_email: bool,
     state: tauri::State<'_, AppState>,
@@ -211,7 +303,40 @@ pub fn bookings_issue(
             &settings,
             &state.data_dir,
             id,
-            output_folder,
+            scope,
+            IssueDestination {
+                output_folder,
+                send_email,
+            },
+            Utc::now(),
+        )
+    })
+}
+
+#[tauri::command(async)]
+pub fn cinemas_plan_pending(
+    id: CinemaId,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<BookingPlanRow>, String> {
+    let settings = state.settings()?;
+    state.with_database(|database| {
+        plan_cinema_pending(database, &settings, &state.data_dir, id, Utc::now())
+    })
+}
+
+#[tauri::command(async)]
+pub fn cinemas_issue_pending(
+    id: CinemaId,
+    send_email: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<CinemaIssueResult, String> {
+    let settings = state.settings()?;
+    state.with_database(|database| {
+        issue_cinema_pending(
+            database,
+            &settings,
+            &state.data_dir,
+            id,
             send_email,
             Utc::now(),
         )
@@ -238,43 +363,89 @@ mod tests {
         assert_eq!(names, vec![("Rex", "1"), ("Rex", "2")]);
     }
 
+    const WRITE_ONLY: IssueDestination = IssueDestination {
+        output_folder: None,
+        send_email: false,
+    };
+
+    fn pending_screens(database: &DistributionDatabase) -> Vec<bool> {
+        list(database).unwrap()[0]
+            .screens
+            .iter()
+            .map(|screen| screen.pending)
+            .collect()
+    }
+
     #[test]
-    fn an_issued_booking_edited_lists_as_needing_a_reissue_and_removal_keeps_the_outbox() {
+    fn a_window_edit_lists_every_issued_screen_as_pending_and_removal_keeps_the_outbox() {
         let directory = tempfile::tempdir().unwrap();
         let (mut database, booking) = booked_database(fixtures());
         let settings = signed_settings(fixtures(), directory.path());
+        assert_eq!(pending_screens(&database), vec![true, true]);
         issue(
             &mut database,
             &settings,
             directory.path(),
             booking,
-            None,
-            false,
+            IssueScope::PendingScreens,
+            WRITE_ONLY,
             Utc::now(),
         )
         .unwrap();
         let row = list(&database).unwrap().remove(0);
-        assert!(!row.needs_reissue);
+        assert_eq!(pending_screens(&database), vec![false, false]);
+        let screen_ids: Vec<ScreenId> = row.screens.iter().map(|screen| screen.id).collect();
         update(
             &mut database,
             booking,
             BookingChange {
-                screen_ids: vec![row.screens[0].id],
+                screen_ids: screen_ids.clone(),
                 start: row.start,
                 end: row.end + chrono::Duration::hours(2),
                 formulation: None,
             },
         )
         .unwrap();
-        let edited = list(&database).unwrap().remove(0);
-        assert!(edited.needs_reissue);
-        assert_eq!(edited.screens.len(), 1);
+        assert_eq!(pending_screens(&database), vec![true, true]);
+
+        let reissued = issue(
+            &mut database,
+            &settings,
+            directory.path(),
+            booking,
+            IssueScope::PendingScreens,
+            WRITE_ONLY,
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(reissued.outcome.bundles[0].kdms.len(), 2);
+        let window_end = reissued.outcome.bundles[0].kdms[0].not_valid_after.clone();
+        assert!(
+            window_end.starts_with(
+                &(row.end + chrono::Duration::hours(2))
+                    .format("%Y-%m-%dT%H:%M:%S")
+                    .to_string()
+            ),
+            "{window_end}"
+        );
+        assert_eq!(pending_screens(&database), vec![false, false]);
+        let again = issue(
+            &mut database,
+            &settings,
+            directory.path(),
+            booking,
+            IssueScope::AllScreens,
+            WRITE_ONLY,
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(again.outcome.bundles[0].kdms.len(), 2, "issue all again");
 
         database.remove_booking(booking).unwrap();
         assert!(list(&database).unwrap().is_empty());
         let outbox = crate::outbox::outbox(&database).unwrap();
-        assert_eq!(outbox.issues.len(), 2);
-        assert_eq!(outbox.deliveries.len(), 1);
+        assert_eq!(outbox.issues.len(), 6);
+        assert_eq!(outbox.deliveries.len(), 3);
     }
 
     #[test]
@@ -282,7 +453,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let (database, booking) = booked_database(fixtures());
         let settings = signed_settings(fixtures(), directory.path());
-        let plan = plan(&database, &settings, directory.path(), booking, Utc::now()).unwrap();
+        let plan = plan(
+            &database,
+            &settings,
+            directory.path(),
+            booking,
+            IssueScope::AllScreens,
+            Utc::now(),
+        )
+        .unwrap();
         let formulations: Vec<Option<KdmFormulation>> = plan
             .screens
             .iter()
@@ -309,8 +488,11 @@ mod tests {
             &settings,
             directory.path(),
             booking,
-            None,
-            true,
+            IssueScope::PendingScreens,
+            IssueDestination {
+                output_folder: None,
+                send_email: true,
+            },
             Utc::now(),
         )
         .unwrap_err();
@@ -321,13 +503,13 @@ mod tests {
             &settings,
             directory.path(),
             booking,
-            None,
-            false,
+            IssueScope::PendingScreens,
+            WRITE_ONLY,
             Utc::now(),
         )
         .unwrap();
         assert_eq!(result.deliveries.len(), 1);
-        assert_eq!(result.deliveries[0].result, DeliveryResult::Written);
+        assert_eq!(result.deliveries[0].record.result, DeliveryResult::Written);
         assert!(result.outcome.bundles[0]
             .zip_path
             .starts_with(directory.path().join("outbox")));

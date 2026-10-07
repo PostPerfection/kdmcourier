@@ -2,9 +2,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { escapeHtml } from "../../extern/guikit/src/html.js";
 import { formatDateTime } from "../../extern/guikit/src/time-format.js";
-import { certificateStatusText, devicesText, emailsFromText } from "./cinema-rows.js";
-import { bookingChange, bookingFields, bookingStateText, newBooking, planRows, screenLabel } from "./booking-form.js";
-import { deliveryText, outcomeRows } from "./issue-outcome.js";
+import { certificateStatusText, cinemaPendingText, devicesText, emailsFromText } from "./cinema-rows.js";
+import {
+  ISSUE_SCOPE,
+  bookedScreenText,
+  bookingChange,
+  bookingFields,
+  bookingPendingText,
+  newBooking,
+  pendingScreenCount,
+  planRows,
+  planScope,
+} from "./booking-form.js";
+import { bookingExpiryRow, nothingExpires, signerChainRow } from "./expiry-rows.js";
+import { cinemaIssueStatus, deliveryText, failedBookingText, issuedStatus, outcomeRows } from "./issue-outcome.js";
 import { settingsUpdateFromFields } from "./settings-form.js";
 
 const FILE_FILTERS = {
@@ -22,6 +33,7 @@ const ZONE_LIST_ID = "time-zone-names";
 
 const statusBadge = document.getElementById("status");
 let selectedBookingId = null;
+let listedBookings = [];
 const issueFolderInput = document.getElementById("issue-folder-path");
 // the booking the form edits, null while it makes a new one
 let editingBooking = null;
@@ -72,6 +84,7 @@ function refreshView(view) {
     cinemas: refreshCinemas,
     bookings: refreshBookings,
     outbox: refreshOutbox,
+    expiry: refreshExpiry,
     settings: loadSettings,
   };
   run(refreshers[view]);
@@ -126,9 +139,18 @@ function screenRowHtml(screen) {
   </tr>`;
 }
 
+function cinemaPendingHtml(cinema) {
+  if (cinema.pendingScreens === 0) return "";
+  return `<div class="cinema-pending-summary">
+    <span class="status-refused">${escapeHtml(cinemaPendingText(cinema.pendingScreens))}</span>
+    <button type="button" class="btn-sm cinema-plan-pending">Issue pending</button>
+  </div>`;
+}
+
 function cinemaHtml(cinema) {
   return `<div class="cinema-block" data-cinema="${cinema.id}">
     <h3>${escapeHtml(cinema.name)}</h3>
+    ${cinemaPendingHtml(cinema)}
     <div class="cinema-edit">
       <input type="text" class="cinema-emails" value="${escapeHtml(cinema.emails.join(", "))}" placeholder="KDM email addresses">
       <input type="text" class="cinema-zone" list="${ZONE_LIST_ID}" value="${escapeHtml(cinema.timeZone ?? "")}" placeholder="IANA time zone">
@@ -138,7 +160,54 @@ function cinemaHtml(cinema) {
       <thead><tr><th>Screen</th><th>Media block</th><th>Authorized devices</th><th>Recipient</th><th>Certificates</th></tr></thead>
       <tbody>${cinema.screens.map(screenRowHtml).join("")}</tbody>
     </table>
+    <div class="cinema-pending"></div>
   </div>`;
+}
+
+function cinemaPlansHtml(plans) {
+  const bookings = plans
+    .map(
+      ({ plan }) => `<h4>${escapeHtml(plan.contentTitle)}</h4>
+        ${notesList(plan.notChecked)}
+        ${detailTableHtml(planRows(plan))}`,
+    )
+    .join("");
+  return `${bookings}
+    <div class="panel-actions">
+      <label><input type="checkbox" class="cinema-issue-email"> Email one ZIP per booking</label>
+      <button type="button" class="btn-sm btn-primary cinema-issue-pending" title="Written to the KDM folder from Settings">Issue</button>
+    </div>`;
+}
+
+function cinemaOutcomesHtml(result) {
+  const issued = result.issued
+    .map(
+      (booking) => `<h4>${escapeHtml(booking.contentTitle)}</h4>
+        ${detailTableHtml(outcomeRows(booking.outcome))}
+        <ul class="notes">${deliveriesHtml(booking.deliveries)}</ul>`,
+    )
+    .join("");
+  const failed = result.failed.map((booking) => `<li>${escapeHtml(failedBookingText(booking))}</li>`).join("");
+  return `${issued}<ul class="notes status-failed">${failed}</ul>`;
+}
+
+async function issueCinemaPending(cinemaId, sendEmail) {
+  const result = await invoke("cinemas_issue_pending", { id: cinemaId, sendEmail });
+  await refreshCinemas();
+  const block = document.querySelector(`.cinema-block[data-cinema="${cinemaId}"]`);
+  block.querySelector(".cinema-pending").innerHTML = cinemaOutcomesHtml(result);
+  showStatus(cinemaIssueStatus(result));
+  block.scrollIntoView();
+}
+
+async function planCinemaPending(block) {
+  const cinemaId = Number(block.dataset.cinema);
+  const plans = await invoke("cinemas_plan_pending", { id: cinemaId });
+  const pending = block.querySelector(".cinema-pending");
+  pending.innerHTML = cinemaPlansHtml(plans);
+  pending.querySelector(".cinema-issue-pending").addEventListener("click", () =>
+    run(() => issueCinemaPending(cinemaId, pending.querySelector(".cinema-issue-email").checked)),
+  );
 }
 
 async function refreshCinemas() {
@@ -158,6 +227,9 @@ async function refreshCinemas() {
         showStatus("Cinema saved");
       }),
     );
+  });
+  list.querySelectorAll(".cinema-plan-pending").forEach((button) => {
+    button.addEventListener("click", () => run(() => planCinemaPending(button.closest(".cinema-block"))));
   });
   return cinemas;
 }
@@ -219,9 +291,25 @@ async function fillBookingForm() {
     .join("");
 }
 
+function bookedScreenHtml(screen) {
+  const text = escapeHtml(bookedScreenText(screen));
+  return screen.pending ? `<span class="status-refused">${text}</span>` : text;
+}
+
+function selectedBooking() {
+  return listedBookings.find((booking) => booking.id === selectedBookingId);
+}
+
+function updateIssueButtons() {
+  const booking = selectedBooking();
+  document.getElementById("issue-run").disabled = !booking || pendingScreenCount(booking) === 0;
+}
+
 async function refreshBookings() {
   await fillBookingForm();
   const bookings = await invoke("bookings_list");
+  listedBookings = bookings;
+  updateIssueButtons();
   const tbody = document.getElementById("bookings-tbody");
   tbody.innerHTML = bookings
     .map(
@@ -229,8 +317,8 @@ async function refreshBookings() {
         <td>${escapeHtml(booking.contentTitle)}</td>
         <td>${escapeHtml(booking.start)}</td>
         <td>${escapeHtml(booking.end)}</td>
-        <td>${escapeHtml(booking.screens.map(screenLabel).join(", "))}</td>
-        <td class="${booking.needsReissue ? "status-refused" : ""}">${escapeHtml(bookingStateText(booking))}</td>
+        <td>${booking.screens.map(bookedScreenHtml).join(", ")}</td>
+        <td class="${pendingScreenCount(booking) > 0 ? "status-refused" : ""}">${escapeHtml(bookingPendingText(booking))}</td>
         <td>
           <button class="btn-sm booking-open" data-booking="${booking.id}">Check</button>
           <button class="btn-sm booking-edit" data-booking="${booking.id}">Edit</button>
@@ -283,6 +371,21 @@ function startEditing(booking) {
 
 document.getElementById("booking-cancel-edit").addEventListener("click", () => setEditing(null));
 
+function detailTableHtml(rows) {
+  return `<table class="jobs-table">
+    <thead>
+      <tr><th>Screen</th><th>Result</th><th>Formulation or file</th><th>Window</th><th>Rule, warning or reason</th></tr>
+    </thead>
+    <tbody>${detailRowsHtml(rows)}</tbody>
+  </table>`;
+}
+
+function deliveriesHtml(deliveries) {
+  return deliveries
+    .map((delivery) => `<li>${escapeHtml(delivery.cinema)}: ${escapeHtml(delivery.zipPath)}, ${escapeHtml(deliveryText(delivery))}</li>`)
+    .join("");
+}
+
 function detailRowsHtml(rows) {
   return rows
     .map(
@@ -299,7 +402,8 @@ function detailRowsHtml(rows) {
 
 async function showPlan(bookingId) {
   selectedBookingId = bookingId;
-  const plan = await invoke("bookings_plan", { id: bookingId });
+  updateIssueButtons();
+  const plan = await invoke("bookings_plan", { id: bookingId, scope: planScope(selectedBooking()) });
   document.getElementById("booking-detail").hidden = false;
   document.getElementById("booking-detail-title").textContent = plan.contentTitle;
   document.getElementById("booking-plan-notes").textContent = plan.notChecked.join(" ");
@@ -340,21 +444,26 @@ document.getElementById("issue-folder").addEventListener("click", () =>
   }),
 );
 
+async function issueSelectedBooking(scope) {
+  if (selectedBookingId === null) return;
+  const result = await invoke("bookings_issue", {
+    id: selectedBookingId,
+    scope,
+    outputFolder: issueFolderInput.value.trim() || null,
+    sendEmail: document.getElementById("issue-email").checked,
+  });
+  document.getElementById("booking-detail-tbody").innerHTML = detailRowsHtml(outcomeRows(result.outcome));
+  document.getElementById("issue-deliveries").innerHTML = deliveriesHtml(result.deliveries);
+  showStatus(issuedStatus([result.outcome]));
+  await refreshBookings();
+  document.getElementById("booking-detail").scrollIntoView();
+}
+
 document.getElementById("issue-run").addEventListener("click", () =>
-  run(async () => {
-    if (selectedBookingId === null) return;
-    const result = await invoke("bookings_issue", {
-      id: selectedBookingId,
-      outputFolder: issueFolderInput.value.trim() || null,
-      sendEmail: document.getElementById("issue-email").checked,
-    });
-    document.getElementById("booking-detail-tbody").innerHTML = detailRowsHtml(outcomeRows(result.outcome));
-    document.getElementById("issue-deliveries").innerHTML = result.deliveries
-      .map((delivery) => `<li>${escapeHtml(delivery.cinema)}: ${escapeHtml(delivery.zipPath)}, ${escapeHtml(deliveryText(delivery))}</li>`)
-      .join("");
-    showStatus(`Issued ${result.outcome.bundles.length} ZIP(s), ${result.outcome.refused.length} screen(s) refused`);
-    document.getElementById("booking-detail").scrollIntoView();
-  }),
+  run(() => issueSelectedBooking(ISSUE_SCOPE.pendingScreens)),
+);
+document.getElementById("issue-run-all").addEventListener("click", () =>
+  run(() => issueSelectedBooking(ISSUE_SCOPE.allScreens)),
 );
 
 // outbox
@@ -365,12 +474,23 @@ async function refreshOutbox() {
     .map(
       (delivery) => `<tr>
         <td>${escapeHtml(formatDateTime(delivery.deliveredAt))}</td>
+        <td>${escapeHtml(delivery.contentTitle)}</td>
         <td>${escapeHtml(delivery.cinema)}</td>
         <td>${escapeHtml(delivery.zipPath)}</td>
         <td class="status-${delivery.result.kind}">${escapeHtml(deliveryText(delivery))}</td>
+        <td><button class="btn-sm delivery-resend" data-delivery="${delivery.id}">Resend</button></td>
       </tr>`,
     )
     .join("");
+  document.querySelectorAll("#deliveries-tbody .delivery-resend").forEach((button) => {
+    button.addEventListener("click", () =>
+      run(async () => {
+        const delivery = await invoke("outbox_resend", { id: Number(button.dataset.delivery) });
+        showStatus(`${delivery.cinema}: ${deliveryText(delivery)}`);
+        await refreshOutbox();
+      }),
+    );
+  });
   document.getElementById("issues-tbody").innerHTML = outbox.issues
     .map(
       (issue) => `<tr>
@@ -387,6 +507,42 @@ async function refreshOutbox() {
 }
 
 document.getElementById("outbox-refresh").addEventListener("click", () => run(refreshOutbox));
+
+// expiry
+
+async function refreshExpiry() {
+  const [report, bookings] = await Promise.all([invoke("expiry_list"), invoke("bookings_list")]);
+  document.getElementById("expiry-empty").hidden = !nothingExpires(report);
+  document.getElementById("expiry-bookings-tbody").innerHTML = report.bookings
+    .map(bookingExpiryRow)
+    .map(
+      (row) => `<tr>
+        <td>${escapeHtml(row.title)}</td>
+        <td>${escapeHtml(row.cinema)}</td>
+        <td>${escapeHtml(row.screen)}</td>
+        <td>${escapeHtml(row.item)}</td>
+        <td class="distinguished-name">${escapeHtml(row.subject)}</td>
+        <td class="status-refused">${escapeHtml(formatDateTime(row.expiresAt))}</td>
+        <td>${escapeHtml(formatDateTime(row.bookingEndsAt))}</td>
+      </tr>`,
+    )
+    .join("");
+  document.getElementById("expiry-signer-tbody").innerHTML = report.signerChain
+    .map((certificate) => signerChainRow(certificate, bookings))
+    .map(
+      (row) => `<tr>
+        <td class="distinguished-name">${escapeHtml(row.subject)}</td>
+        <td class="${row.bookingsEndingAfter ? "status-refused" : ""}">${escapeHtml(formatDateTime(row.expiresAt))}</td>
+        <td>${escapeHtml(row.bookingsEndingAfter)}</td>
+      </tr>`,
+    )
+    .join("");
+  document.getElementById("expiry-not-checked").innerHTML = report.notChecked
+    .map((line) => `<li>${escapeHtml(line)}</li>`)
+    .join("");
+}
+
+document.getElementById("expiry-refresh").addEventListener("click", () => run(refreshExpiry));
 
 // settings
 

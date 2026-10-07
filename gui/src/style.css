@@ -14,7 +14,8 @@
   font-size: 12px;
 }
 /* a refusal quotes whole distinguished names */
-.notes li {
+.notes li,
+.distinguished-name {
   overflow-wrap: anywhere;
 }
 .screen-picker {
@@ -43,4 +44,10 @@ textarea {
 .error-text {
   color: #f87171;
   white-space: pre-wrap;
+}
+.cinema-pending-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
 }

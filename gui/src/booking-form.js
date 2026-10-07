@@ -42,12 +42,29 @@ export function bookingFields(booking) {
   };
 }
 
-export function bookingStateText(booking) {
-  return booking.needsReissue ? 'edited since its KDMs were issued, issue again' : '';
+export const ISSUE_SCOPE = { allScreens: 'allScreens', pendingScreens: 'pendingScreens' };
+
+export function pendingScreenCount(booking) {
+  return booking.screens.filter((screen) => screen.pending).length;
+}
+
+export function bookingPendingText(booking) {
+  const pending = pendingScreenCount(booking);
+  if (pending === 0) return '';
+  const total = booking.screens.length;
+  return `${pending} of ${total} ${total === 1 ? 'screen' : 'screens'} ${pending === 1 ? 'needs' : 'need'} a KDM`;
+}
+
+export function planScope(booking) {
+  return pendingScreenCount(booking) > 0 ? ISSUE_SCOPE.pendingScreens : ISSUE_SCOPE.allScreens;
 }
 
 export function screenLabel(row) {
   return `${row.cinema} / ${row.screen}`;
+}
+
+export function bookedScreenText(screen) {
+  return screen.pending ? `${screenLabel(screen)} (needs a KDM)` : screenLabel(screen);
 }
 
 // one row per screen: what it gets, or the checks it fails
