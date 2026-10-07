@@ -47,7 +47,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libxml2-dev libssl-dev libxerces-c-dev libasound2-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm2cpio cpio
+          sudo apt-get install -y pkg-config libxml2-dev libssl-dev libxerces-c-dev libasound2-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libarchive-tools
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
@@ -92,8 +92,26 @@ jobs:
           $dlls = @(Get-ChildItem gui/src-tauri/*.dll | ForEach-Object Name)
           $dlls
           # a tauri.windows.conf.json glob would fail every build that has no dlls staged
-          ConvertTo-Json @{ bundle = @{ resources = $dlls } } -Depth 3 | Set-Content "$env:RUNNER_TEMP/staged-dlls.json"
-          Get-Content "$env:RUNNER_TEMP/staged-dlls.json"
+          ConvertTo-Json @{ bundle = @{ resources = $dlls } } -Depth 3 | Set-Content "$env:RUNNER_TEMP/bundle-libraries.json"
+          Get-Content "$env:RUNNER_TEMP/bundle-libraries.json"
+
+      - name: Stage dylibs (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="$GITHUB_WORKSPACE/gui/src-tauri/macos-libraries"
+          pnpm --dir gui build
+          cargo build --release --manifest-path gui/src-tauri/Cargo.toml
+          scripts/stage-macos-libraries.sh gui/src-tauri/target/release/kdmcourier-gui "$staging" "$FFMPEG_MPV_DIR/lib"
+          ls -la "$staging"
+          jq -n \
+            --arg relink "bash $GITHUB_WORKSPACE/scripts/relink-macos.sh $staging" \
+            --argjson frameworks "$(find "$staging" -name '*.dylib' | sort | jq -R . | jq -s -c .)" \
+            --arg licence "$FFMPEG_MPV_DIR/THIRD-PARTY-LICENSES" \
+            '{build: {beforeBundleCommand: $relink}, bundle: {macOS: {frameworks: $frameworks}, resources: {($licence): "THIRD-PARTY-LICENSES-ffmpeg-mpv.txt"}}}' \
+            > "$RUNNER_TEMP/bundle-libraries.json"
+          jq . "$RUNNER_TEMP/bundle-libraries.json"
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -106,7 +124,7 @@ jobs:
           uploadWorkflowArtifacts: ${{ github.ref_type != 'tag' }}
           releaseDraft: false
           prerelease: false
-          args: ${{ runner.os == 'Windows' && format('--config {0}/staged-dlls.json', runner.temp) || '' }}
+          args: ${{ runner.os != 'Linux' && format('--config {0}/bundle-libraries.json', runner.temp) || '' }}
 
       # ffmpeg-mpv-builds exports LD_LIBRARY_PATH, which would hide a library the package does not carry
       - name: The packages load only system libraries (Linux)
@@ -144,11 +162,11 @@ jobs:
 
           rpm=$(realpath "$(find "$bundle/rpm" -name '*.rpm' -print -quit)")
           rpm_root=$(mktemp -d)
-          (cd "$rpm_root" && rpm2cpio "$rpm" | cpio -idm --quiet)
+          bsdtar -xf "$rpm" -C "$rpm_root"
           check_binary "$rpm_root/$binary"
 
       # ffmpeg-mpv-builds exports DYLD_LIBRARY_PATH, which would hide a library the .app does not carry
-      - name: The app loads only system libraries (macOS)
+      - name: The app loads its libraries from the bundle (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -165,12 +183,36 @@ jobs:
             exit 1
           fi
           binary="$app/Contents/MacOS/kdmcourier-gui"
-          otool -L "$binary"
-          # the .app carries no libraries, so an @rpath, Homebrew or runner path is one it cannot load
-          if otool -L "$binary" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/)'; then
-            echo "$binary loads a library from outside the system"
+          frameworks="$app/Contents/Frameworks"
+          ls -la "$frameworks"
+          if [ ! -f "$app/Contents/Resources/THIRD-PARTY-LICENSES-ffmpeg-mpv.txt" ]; then
+            echo "the app does not carry Contents/Resources/THIRD-PARTY-LICENSES-ffmpeg-mpv.txt"
             exit 1
           fi
+          if ! otool -l "$binary" | grep -qF "path @executable_path/../Frameworks ("; then
+            echo "$binary does not search Contents/Frameworks"
+            exit 1
+          fi
+          for file in "$binary" "$frameworks"/*.dylib; do
+            otool -L "$file"
+            own_id=$(otool -D "$file" | tail -n +2)
+            # otool -L lists a dylib's own id among its references
+            for reference in $(otool -L "$file" | awk -v own_id="$own_id" 'NR > 1 && $1 != own_id {print $1}'); do
+              case "$reference" in
+                /usr/lib/* | /System/*) ;;
+                @rpath/* | @executable_path/* | @loader_path/*)
+                  if [ ! -f "$frameworks/$(basename "$reference")" ]; then
+                    echo "$file loads $reference, which Contents/Frameworks does not carry"
+                    exit 1
+                  fi
+                  ;;
+                *)
+                  echo "$file loads $reference from outside the app"
+                  exit 1
+                  ;;
+              esac
+            done
+          done
           # a missing dylib kills the app at exec, so it has to be alive a few seconds later
           env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$binary" &
           app_pid=$!
