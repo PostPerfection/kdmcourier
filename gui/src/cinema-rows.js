@@ -25,3 +25,8 @@ export function cinemaPendingText(pendingScreens) {
   if (pendingScreens === 0) return '';
   return `${pendingScreens} booked ${pendingScreens === 1 ? 'screen needs' : 'screens need'} a KDM`;
 }
+
+export function cinemaEndingSoonText(bookingsEndingSoon) {
+  if (bookingsEndingSoon === 0) return '';
+  return `${bookingsEndingSoon} ${bookingsEndingSoon === 1 ? 'booking ends' : 'bookings end'} soon`;
+}

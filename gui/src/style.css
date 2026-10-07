@@ -4,6 +4,9 @@
 .status-failed {
   color: #f87171;
 }
+.status-ending-soon {
+  color: #fbbf24;
+}
 .status-issued,
 .status-sent {
   color: #4ade80;

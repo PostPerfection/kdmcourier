@@ -1,3 +1,4 @@
+use crate::bookings::ENDING_SOON_WITHIN;
 use crate::state::AppState;
 use postkit::certificate::cert_info_from_pem;
 use postkit::kdm_distribution::cinema::{read_flm_cinema, CinemaDb, Screen};
@@ -5,6 +6,7 @@ use postkit::kdm_distribution::database::{
     CinemaId, CinemaSaveReport, DistributionDatabase, ImportReport, ScreenChange, ScreenId,
     StoredCinema,
 };
+use postkit::kdm_distribution::expiry::bookings_ending_within;
 use postkit::kdm_distribution::history;
 use postkit::kdm_distribution::screen_checks::check_screen_certificates;
 use postkit::kdm_distribution::window::check_time_zone;
@@ -49,6 +51,7 @@ pub struct CinemaRow {
     pub screens: Vec<ScreenRow>,
     // booked screens across every booking that need a KDM issued
     pub pending_screens: usize,
+    pub bookings_ending_soon: usize,
 }
 
 fn certificate_status(
@@ -73,6 +76,7 @@ fn certificate_status(
 fn cinema_row(
     stored: StoredCinema,
     pending_screens: usize,
+    bookings_ending_soon: usize,
     now: chrono::DateTime<chrono::Utc>,
 ) -> CinemaRow {
     let screens = stored
@@ -107,6 +111,7 @@ fn cinema_row(
         emails: stored.cinema.emails,
         screens,
         pending_screens,
+        bookings_ending_soon,
     }
 }
 
@@ -114,6 +119,7 @@ pub fn list(
     database: &DistributionDatabase,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<CinemaRow>, String> {
+    let ending_soon = bookings_ending_within(database, now, ENDING_SOON_WITHIN)?;
     database
         .cinemas()?
         .into_iter()
@@ -123,7 +129,11 @@ pub fn list(
                 .iter()
                 .map(|booking| booking.screen_ids.len())
                 .sum();
-            Ok(cinema_row(stored, pending, now))
+            let ending_soon_here = ending_soon
+                .iter()
+                .filter(|ending| ending.cinema_id == stored.id)
+                .count();
+            Ok(cinema_row(stored, pending, ending_soon_here, now))
         })
         .collect()
 }
@@ -279,14 +289,15 @@ mod tests {
     use super::*;
     use crate::bookings::{issue, issue_cinema_pending, IssueDestination};
     use crate::test_fixtures::{
-        dkdm, extended_flm, extended_flm_with_first_recipient, fixtures, local_window,
-        signed_settings, DCNC_TITLE, SMPTE_EXAMPLE_FLM,
+        booked_database, dkdm, extended_flm, extended_flm_with_first_recipient, fixtures,
+        local_window, signed_settings, DCNC_TITLE, SMPTE_EXAMPLE_FLM,
     };
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use postkit::kdm_distribution::database::IssueScope;
+    use postkit::kdm_distribution::window::kdm_window_in_time_zone;
 
     fn pending_by_screen(database: &DistributionDatabase) -> Vec<(String, bool)> {
-        crate::bookings::list(database).unwrap()[0]
+        crate::bookings::list(database, Utc::now()).unwrap()[0]
             .screens
             .iter()
             .map(|screen| {
@@ -548,5 +559,27 @@ mod tests {
             1
         );
         assert_eq!(database.issues().unwrap()[0].content_title, "Feature");
+    }
+
+    #[test]
+    fn a_cinema_counts_each_booking_ending_within_three_days_once() {
+        let (mut database, booking) = booked_database(fixtures());
+        let stored = database.booking(booking).unwrap();
+        database
+            .add_booking(
+                stored.title_id,
+                &stored.screen_ids[..1],
+                stored.window,
+                None,
+                Utc::now(),
+            )
+            .unwrap();
+        let rex_end = kdm_window_in_time_zone(&stored.window, "Europe/London")
+            .unwrap()
+            .end;
+
+        let ending_soon = |now| list(&database, now).unwrap()[0].bookings_ending_soon;
+        assert_eq!(ending_soon(Utc::now()), 0);
+        assert_eq!(ending_soon(rex_end - Duration::days(1)), 2);
     }
 }

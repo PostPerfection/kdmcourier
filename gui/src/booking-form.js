@@ -55,6 +55,20 @@ export function bookingPendingText(booking) {
   return `${pending} of ${total} ${total === 1 ? 'screen' : 'screens'} ${pending === 1 ? 'needs' : 'need'} a KDM`;
 }
 
+const HOUR_MILLISECONDS = 60 * 60 * 1000;
+const HOURS_PER_DAY = 24;
+
+function countText(count, unit) {
+  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+}
+
+export function bookingEndingText(booking, now) {
+  if (!booking.endsSoonAt) return '';
+  const hours = Math.max(1, Math.floor((Date.parse(booking.endsSoonAt) - now.getTime()) / HOUR_MILLISECONDS));
+  if (hours < HOURS_PER_DAY) return `ends in ${countText(hours, 'hour')}`;
+  return `ends in ${countText(Math.floor(hours / HOURS_PER_DAY), 'day')}`;
+}
+
 export function planScope(booking) {
   return pendingScreenCount(booking) > 0 ? ISSUE_SCOPE.pendingScreens : ISSUE_SCOPE.allScreens;
 }

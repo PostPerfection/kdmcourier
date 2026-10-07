@@ -1,16 +1,19 @@
 use crate::settings::Settings;
 use crate::state::AppState;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use postkit::certificate::KdmFormulation;
 use postkit::kdm_distribution::database::{
     BookingId, BookingIssueFailure, CinemaId, DistributionDatabase, IssueScope, ScreenId,
     StoredDelivery, TitleId,
 };
 use postkit::kdm_distribution::email::SmtpConfig;
+use postkit::kdm_distribution::expiry::bookings_ending_within;
 use postkit::kdm_distribution::issue::{DkdmIssueOutcome, IssuePlan};
 use postkit::kdm_distribution::window::LocalWindow;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+pub const ENDING_SOON_WITHIN: Duration = Duration::days(3);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +35,8 @@ pub struct BookingRow {
     pub end: NaiveDateTime,
     pub formulation: Option<KdmFormulation>,
     pub screens: Vec<BookedScreen>,
+    // the earliest end at a booked cinema within ENDING_SOON_WITHIN of now
+    pub ends_soon_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -92,8 +97,12 @@ pub struct BookingPlanRow {
     pub plan: IssuePlan,
 }
 
-pub fn list(database: &DistributionDatabase) -> Result<Vec<BookingRow>, String> {
+pub fn list(
+    database: &DistributionDatabase,
+    now: DateTime<Utc>,
+) -> Result<Vec<BookingRow>, String> {
     let cinemas = database.cinemas()?;
+    let ending_soon = bookings_ending_within(database, now, ENDING_SOON_WITHIN)?;
     let booked_screen = |id: ScreenId, pending: bool| {
         cinemas.iter().find_map(|stored| {
             let index = stored.screen_ids.iter().position(|screen| *screen == id)?;
@@ -122,6 +131,11 @@ pub fn list(database: &DistributionDatabase) -> Result<Vec<BookingRow>, String> 
                     .iter()
                     .filter_map(|id| booked_screen(*id, booking.pending_screen_ids.contains(id)))
                     .collect(),
+                ends_soon_at: ending_soon
+                    .iter()
+                    .filter(|ending| ending.booking_id == booking.id)
+                    .map(|ending| ending.ends_at)
+                    .min(),
             })
         })
         .collect()
@@ -252,7 +266,7 @@ pub fn issue_cinema_pending(
 
 #[tauri::command(async)]
 pub fn bookings_list(state: tauri::State<'_, AppState>) -> Result<Vec<BookingRow>, String> {
-    state.with_database(|database| list(database))
+    state.with_database(|database| list(database, Utc::now()))
 }
 
 #[tauri::command(async)]
@@ -346,13 +360,17 @@ pub fn cinemas_issue_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_fixtures::{booked_database, fixtures, signed_settings};
+    use crate::test_fixtures::{
+        booked_database, dkdm, extended_flm, fixtures, local_window, signed_settings, DCNC_TITLE,
+    };
+    use postkit::kdm_distribution::cinema::read_flm_cinema;
     use postkit::kdm_distribution::database::DeliveryResult;
+    use postkit::kdm_distribution::window::kdm_window_in_time_zone;
 
     #[test]
     fn a_booking_lists_its_title_and_screens_by_name() {
         let (database, booking) = booked_database(fixtures());
-        let rows = list(&database).unwrap();
+        let rows = list(&database, Utc::now()).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, booking);
         let names: Vec<(&str, &str)> = rows[0]
@@ -369,7 +387,7 @@ mod tests {
     };
 
     fn pending_screens(database: &DistributionDatabase) -> Vec<bool> {
-        list(database).unwrap()[0]
+        list(database, Utc::now()).unwrap()[0]
             .screens
             .iter()
             .map(|screen| screen.pending)
@@ -392,7 +410,7 @@ mod tests {
             Utc::now(),
         )
         .unwrap();
-        let row = list(&database).unwrap().remove(0);
+        let row = list(&database, Utc::now()).unwrap().remove(0);
         assert_eq!(pending_screens(&database), vec![false, false]);
         let screen_ids: Vec<ScreenId> = row.screens.iter().map(|screen| screen.id).collect();
         update(
@@ -442,7 +460,7 @@ mod tests {
         assert_eq!(again.outcome.bundles[0].kdms.len(), 2, "issue all again");
 
         database.remove_booking(booking).unwrap();
-        assert!(list(&database).unwrap().is_empty());
+        assert!(list(&database, Utc::now()).unwrap().is_empty());
         let outbox = crate::outbox::outbox(&database).unwrap();
         assert_eq!(outbox.issues.len(), 6);
         assert_eq!(outbox.deliveries.len(), 3);
@@ -514,5 +532,40 @@ mod tests {
             .zip_path
             .starts_with(directory.path().join("outbox")));
         assert_eq!(database.issues().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_booking_ending_within_three_days_shows_its_earliest_end_across_its_cinemas() {
+        let f = fixtures();
+        let directory = tempfile::tempdir().unwrap();
+        let mut database = DistributionDatabase::open_in_memory().unwrap();
+        let mut screens = Vec::new();
+        for (name, zone) in [("Rex", "Europe/London"), ("Kino", "Asia/Tokyo")] {
+            let flm = directory.path().join(format!("{name}.xml"));
+            std::fs::write(&flm, extended_flm(f, name, zone)).unwrap();
+            let cinema = database
+                .save_cinema(&read_flm_cinema(&flm).unwrap())
+                .unwrap()
+                .cinema_id;
+            screens.push(database.cinema(cinema).unwrap().screen_ids[0]);
+        }
+        let title = database
+            .add_title_from_dkdm(&dkdm(f, DCNC_TITLE, 30))
+            .unwrap();
+        let window = local_window();
+        database
+            .add_booking(title, &screens, window, None, Utc::now())
+            .unwrap();
+        let end_in = |zone| kdm_window_in_time_zone(&window, zone).unwrap().end;
+        let (london_end, tokyo_end) = (end_in("Europe/London"), end_in("Asia/Tokyo"));
+
+        let ends_soon_at = |now| list(&database, now).unwrap()[0].ends_soon_at;
+        assert_eq!(ends_soon_at(Utc::now()), None);
+        assert_eq!(
+            ends_soon_at(london_end - Duration::days(1)),
+            Some(tokyo_end)
+        );
+        assert_eq!(ends_soon_at(tokyo_end), Some(london_end));
+        assert_eq!(ends_soon_at(london_end), None);
     }
 }

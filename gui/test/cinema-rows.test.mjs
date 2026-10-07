@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { certificateStatusText, cinemaPendingText, devicesText, emailsFromText } from '../src/cinema-rows.js';
+import { certificateStatusText, cinemaEndingSoonText, cinemaPendingText, devicesText, emailsFromText } from '../src/cinema-rows.js';
 
 test('addresses split on commas, spaces and new lines', () => {
   assert.deepEqual(emailsFromText('kdm@rex.test, booth@rex.test\nops@rex.test;'), ['kdm@rex.test', 'booth@rex.test', 'ops@rex.test']);
@@ -26,4 +26,10 @@ test('a cinema counts its booked screens that need a KDM', () => {
   assert.equal(cinemaPendingText(0), '');
   assert.equal(cinemaPendingText(1), '1 booked screen needs a KDM');
   assert.equal(cinemaPendingText(3), '3 booked screens need a KDM');
+});
+
+test('a cinema counts its bookings ending soon', () => {
+  assert.equal(cinemaEndingSoonText(0), '');
+  assert.equal(cinemaEndingSoonText(1), '1 booking ends soon');
+  assert.equal(cinemaEndingSoonText(2), '2 bookings end soon');
 });

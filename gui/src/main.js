@@ -2,11 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { escapeHtml } from "../../extern/guikit/src/html.js";
 import { formatDateTime } from "../../extern/guikit/src/time-format.js";
-import { certificateStatusText, cinemaPendingText, devicesText, emailsFromText } from "./cinema-rows.js";
+import {
+  certificateStatusText,
+  cinemaEndingSoonText,
+  cinemaPendingText,
+  devicesText,
+  emailsFromText,
+} from "./cinema-rows.js";
 import {
   ISSUE_SCOPE,
   bookedScreenText,
   bookingChange,
+  bookingEndingText,
   bookingFields,
   bookingPendingText,
   newBooking,
@@ -147,10 +154,16 @@ function cinemaPendingHtml(cinema) {
   </div>`;
 }
 
+function cinemaEndingSoonHtml(cinema) {
+  if (cinema.bookingsEndingSoon === 0) return "";
+  return `<div class="status-ending-soon">${escapeHtml(cinemaEndingSoonText(cinema.bookingsEndingSoon))}</div>`;
+}
+
 function cinemaHtml(cinema) {
   return `<div class="cinema-block" data-cinema="${cinema.id}">
     <h3>${escapeHtml(cinema.name)}</h3>
     ${cinemaPendingHtml(cinema)}
+    ${cinemaEndingSoonHtml(cinema)}
     <div class="cinema-edit">
       <input type="text" class="cinema-emails" value="${escapeHtml(cinema.emails.join(", "))}" placeholder="KDM email addresses">
       <input type="text" class="cinema-zone" list="${ZONE_LIST_ID}" value="${escapeHtml(cinema.timeZone ?? "")}" placeholder="IANA time zone">
@@ -296,6 +309,16 @@ function bookedScreenHtml(screen) {
   return screen.pending ? `<span class="status-refused">${text}</span>` : text;
 }
 
+function bookingStateHtml(booking, now) {
+  return [
+    ["status-refused", bookingPendingText(booking)],
+    ["status-ending-soon", bookingEndingText(booking, now)],
+  ]
+    .filter(([, text]) => text)
+    .map(([className, text]) => `<div class="${className}">${escapeHtml(text)}</div>`)
+    .join("");
+}
+
 function selectedBooking() {
   return listedBookings.find((booking) => booking.id === selectedBookingId);
 }
@@ -311,6 +334,7 @@ async function refreshBookings() {
   listedBookings = bookings;
   updateIssueButtons();
   const tbody = document.getElementById("bookings-tbody");
+  const now = new Date();
   tbody.innerHTML = bookings
     .map(
       (booking) => `<tr>
@@ -318,7 +342,7 @@ async function refreshBookings() {
         <td>${escapeHtml(booking.start)}</td>
         <td>${escapeHtml(booking.end)}</td>
         <td>${booking.screens.map(bookedScreenHtml).join(", ")}</td>
-        <td class="${pendingScreenCount(booking) > 0 ? "status-refused" : ""}">${escapeHtml(bookingPendingText(booking))}</td>
+        <td>${bookingStateHtml(booking, now)}</td>
         <td>
           <button class="btn-sm booking-open" data-booking="${booking.id}">Check</button>
           <button class="btn-sm booking-edit" data-booking="${booking.id}">Edit</button>

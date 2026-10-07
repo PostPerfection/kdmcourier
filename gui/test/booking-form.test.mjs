@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   bookedScreenText,
   bookingChange,
+  bookingEndingText,
   bookingFields,
   bookingLocalTime,
   bookingPendingText,
@@ -82,4 +83,15 @@ test('Check plans the pending screens, or every screen once none are pending', (
 test('a pending screen is marked in the screens list', () => {
   assert.equal(bookedScreenText(screen('1', true)), 'Rex / 1 (needs a KDM)');
   assert.equal(bookedScreenText(screen('2', false)), 'Rex / 2');
+});
+
+test('a booking ending soon says how many days are left, or hours under a day', () => {
+  const now = new Date('2026-11-05T12:00:00Z');
+  const endingAt = (endsSoonAt) => bookingEndingText({ endsSoonAt }, now);
+  assert.equal(endingAt(null), '');
+  assert.equal(endingAt('2026-11-08T11:00:00Z'), 'ends in 2 days');
+  assert.equal(endingAt('2026-11-06T13:00:00Z'), 'ends in 1 day');
+  assert.equal(endingAt('2026-11-06T11:30:00Z'), 'ends in 23 hours');
+  assert.equal(endingAt('2026-11-05T13:00:00Z'), 'ends in 1 hour');
+  assert.equal(endingAt('2026-11-05T12:20:00Z'), 'ends in 1 hour');
 });
