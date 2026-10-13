@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- The macOS download is the `.dmg` alone, the release no longer carries an `.app.tar.gz`.
+
 ## [1.0.0] - 2026-10-07
 
 - A booking whose window ends within 3 days at any of its cinemas shows "ends in 2 days", or hours under a day, in the Bookings State column, and each cinema shows how many of its bookings end soon, so a holdover can be booked by extending the end date, which marks the issued screens for reissue.

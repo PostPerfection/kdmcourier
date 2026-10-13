@@ -6,10 +6,55 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  bundle:
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          desktop_crate_version=$(awk '/^\[package\]/{found=1; next} /^\[/{found=0} found && /^version = / {gsub(/[" ]/, "", $3); print $3; exit}' gui/src-tauri/Cargo.toml)
+          desktop_version=$(jq -r .version gui/src-tauri/tauri.conf.json)
+          frontend_version=$(jq -r .version gui/package.json)
+
+          release_version="$desktop_version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            release_version="${GITHUB_REF_NAME#v}"
+          fi
+
+          for version in "$desktop_crate_version" "$desktop_version" "$frontend_version"; do
+            if [ "$version" != "$release_version" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match project version $version"
+              exit 1
+            fi
+          done
+
+      - name: Release notes from CHANGELOG.md
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk -v heading="## [$version]" 'index($0, heading) == 1 {found = 1; next} found && /^## / {exit} found {print}' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            echo "::error::CHANGELOG.md has no notes for $version"
+            exit 1
+          fi
+
+      - name: Upload release notes
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+
+  gui:
+    needs: version
     strategy:
       fail-fast: false
       matrix:
@@ -22,7 +67,7 @@ jobs:
             name: Windows
 
     runs-on: ${{ matrix.os }}
-    name: Bundle (${{ matrix.name }})
+    name: GUI (${{ matrix.name }})
 
     steps:
       - name: Enable long paths (Windows)
@@ -114,15 +159,8 @@ jobs:
           jq . "$RUNNER_TEMP/bundle-libraries.json"
 
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: gui
-          # a dispatch run publishes nothing
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: ${{ github.ref_type == 'tag' && format('KDM Courier {0}', github.ref_name) || '' }}
-          releaseDraft: false
-          prerelease: false
           args: ${{ runner.os != 'Linux' && format('--config {0}/bundle-libraries.json', runner.temp) || '' }}
 
       # ffmpeg-mpv-builds exports LD_LIBRARY_PATH, which would hide a library the package does not carry
@@ -238,8 +276,8 @@ jobs:
             if (-not (Test-Path (Join-Path $installDirectory $dll.Name))) { throw "the installer does not carry $($dll.Name)" }
           }
 
-      - name: Upload the bundles (dispatch)
-        if: github.ref_type != 'tag'
+
+      - name: Upload the bundles
         uses: actions/upload-artifact@v4
         with:
           name: kdmcourier-${{ matrix.name }}
@@ -251,3 +289,29 @@ jobs:
             gui/src-tauri/target/release/bundle/nsis/*-setup.exe
             gui/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [gui]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: KDM Courier ${{ github.ref_name }}
+          body_path: artifacts/release-notes/release-notes.md
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
+            artifacts/**/*.AppImage
+            artifacts/**/*.dmg
+            artifacts/**/*.msi
+            artifacts/**/*-setup.exe
