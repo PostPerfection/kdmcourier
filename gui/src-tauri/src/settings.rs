@@ -1,4 +1,5 @@
 use postkit::certificate::{AudioForensicMarking, PictureForensicMarking};
+use postkit::kdm_distribution::certificate_fetch::{Credentials, Vendor};
 use postkit::kdm_distribution::database::IssueSettings;
 use postkit::kdm_distribution::email::{Security, SmtpConfig};
 use postkit::kdm_distribution::flm_exchange::{Feed, FeedAuthentication};
@@ -9,12 +10,13 @@ use std::path::{Path, PathBuf};
 const SETTINGS_FILE: &str = "settings.json";
 const DATABASE_FILE: &str = "kdmcourier.sqlite";
 const OUTBOX_DIRECTORY: &str = "outbox";
+const CREDENTIALED_VENDORS: [Vendor; 3] = [Vendor::Christie, Vendor::Gdc, Vendor::Barco];
 
 pub fn settings_path() -> PathBuf {
     postkit::preferences::config_dir(crate::APP_DIRECTORY_NAME).join(SETTINGS_FILE)
 }
 
-// written with owner-only permissions, it holds the SMTP and feed passwords as dcpwizard's smtp file does
+// written with owner-only permissions, it holds the SMTP, feed and vendor passwords as dcpwizard's smtp file does
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -29,7 +31,20 @@ pub struct Settings {
     pub output_folder: Option<PathBuf>,
     pub smtp: Option<SmtpConfig>,
     pub feeds: Vec<StoredFeed>,
+    pub vendor_accounts: Vec<StoredVendorAccount>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VendorAccount<Password> {
+    pub vendor: Vendor,
+    pub user: String,
+    pub password: Password,
+}
+
+pub type StoredVendorAccount = VendorAccount<Option<String>>;
+pub type VendorAccountView = VendorAccount<PasswordStatus>;
+pub type VendorAccountUpdate = VendorAccount<PasswordChange>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,6 +165,8 @@ pub struct SettingsView {
     pub smtp: Option<SmtpFields>,
     pub smtp_password_set: bool,
     pub feeds: Vec<FeedView>,
+    // one per vendor that needs an account, set or not
+    pub vendor_accounts: Vec<VendorAccountView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,6 +200,7 @@ pub struct SettingsUpdate {
     pub smtp: Option<SmtpFields>,
     pub smtp_password: PasswordChange,
     pub feeds: Vec<FeedUpdate>,
+    pub vendor_accounts: Vec<VendorAccountUpdate>,
 }
 
 impl Settings {
@@ -237,7 +255,42 @@ impl Settings {
                     })
                 })
                 .collect(),
+            vendor_accounts: CREDENTIALED_VENDORS
+                .into_iter()
+                .map(|vendor| {
+                    let stored = self.vendor_account(vendor);
+                    VendorAccount {
+                        vendor,
+                        user: stored
+                            .map(|account| account.user.clone())
+                            .unwrap_or_default(),
+                        password: PasswordStatus {
+                            set: stored.is_some_and(|account| account.password.is_some()),
+                        },
+                    }
+                })
+                .collect(),
         }
+    }
+
+    fn vendor_account(&self, vendor: Vendor) -> Option<&StoredVendorAccount> {
+        self.vendor_accounts
+            .iter()
+            .find(|account| account.vendor == vendor)
+    }
+
+    // None for a vendor whose server needs no account
+    pub fn vendor_credentials(&self, vendor: Vendor) -> Result<Option<Credentials>, String> {
+        if !CREDENTIALED_VENDORS.contains(&vendor) {
+            return Ok(None);
+        }
+        let missing = || format!("set the {vendor} account in Settings before fetching");
+        let account = self.vendor_account(vendor).ok_or_else(missing)?;
+        let password = account.password.clone().ok_or_else(missing)?;
+        Ok(Some(Credentials {
+            user: account.user.clone(),
+            password,
+        }))
     }
 
     pub fn updated(&self, update: SettingsUpdate) -> Settings {
@@ -262,6 +315,22 @@ impl Settings {
                 feed.with_password(|change| change.applied_to(kept_password))
             })
             .collect();
+        // an account with no user is removed, its password with it
+        let vendor_accounts = update
+            .vendor_accounts
+            .into_iter()
+            .filter(|account| !account.user.trim().is_empty())
+            .map(|account| {
+                let kept_password = self
+                    .vendor_account(account.vendor)
+                    .and_then(|stored| stored.password.clone());
+                VendorAccount {
+                    vendor: account.vendor,
+                    user: account.user.trim().to_string(),
+                    password: account.password.applied_to(kept_password),
+                }
+            })
+            .collect();
         Settings {
             database_path: update.database_path,
             signer_certificate: update.signer_certificate,
@@ -281,6 +350,7 @@ impl Settings {
                 body_template: fields.body_template,
             }),
             feeds,
+            vendor_accounts,
         }
     }
 
@@ -367,6 +437,7 @@ mod tests {
             smtp: Some(smtp_fields()),
             smtp_password: password,
             feeds: Vec::new(),
+            vendor_accounts: Vec::new(),
         }
     }
 
@@ -465,6 +536,71 @@ mod tests {
         );
         let cleared = kept.updated(update(PasswordChange::Clear));
         assert_eq!(cleared.smtp.unwrap().password, None);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    fn christie_account(password: PasswordChange) -> SettingsUpdate {
+        SettingsUpdate {
+            vendor_accounts: vec![VendorAccount {
+                vendor: Vendor::Christie,
+                user: " projectionist ".into(),
+                password,
+            }],
+            ..update(PasswordChange::Keep)
+        }
+    }
+
+    #[test]
+    fn a_vendor_password_is_stored_never_shown_and_kept_until_changed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(SETTINGS_FILE);
+        let saved = Settings::default().updated(christie_account(PasswordChange::Set {
+            password: "hunter2".into(),
+        }));
+        saved.save(&path).unwrap();
+        let loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded, saved);
+        let credentials = loaded
+            .vendor_credentials(Vendor::Christie)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (credentials.user.as_str(), credentials.password.as_str()),
+            ("projectionist", "hunter2")
+        );
+
+        let view = loaded.view(directory.path());
+        let view_json = serde_json::to_string(&view).unwrap();
+        assert!(!view_json.contains("hunter2"), "{view_json}");
+        let shown: Vec<(Vendor, &str, bool)> = view
+            .vendor_accounts
+            .iter()
+            .map(|account| (account.vendor, account.user.as_str(), account.password.set))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Vendor::Christie, "projectionist", true),
+                (Vendor::Gdc, "", false),
+                (Vendor::Barco, "", false),
+            ]
+        );
+
+        let kept = loaded.updated(christie_account(PasswordChange::Keep));
+        assert!(kept.vendor_credentials(Vendor::Christie).unwrap().is_some());
+        assert!(kept.vendor_credentials(Vendor::Dolby).unwrap().is_none());
+        let error = kept.vendor_credentials(Vendor::Barco).unwrap_err();
+        assert_eq!(error, "set the Barco account in Settings before fetching");
+        let cleared = kept.updated(christie_account(PasswordChange::Clear));
+        assert!(cleared.vendor_credentials(Vendor::Christie).is_err());
+        let removed = kept.updated(update(PasswordChange::Keep));
+        assert!(removed.vendor_accounts.is_empty());
 
         #[cfg(unix)]
         {

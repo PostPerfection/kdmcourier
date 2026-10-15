@@ -19,6 +19,9 @@
         <button class="sidebar-btn" data-view="bookings" title="Bookings">
           <svg viewBox="0 0 24 24"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z"/></svg>
         </button>
+        <button class="sidebar-btn" data-view="quick-kdm" title="Quick KDM">
+          <svg viewBox="0 0 24 24"><path d="M12.65 10A5.99 5.99 0 0 0 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6a5.99 5.99 0 0 0 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+        </button>
         <button class="sidebar-btn" data-view="outbox" title="Outbox">
           <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
         </button>
@@ -152,6 +155,66 @@
               <tbody id="booking-detail-tbody"></tbody>
             </table>
             <ul id="issue-deliveries" class="notes"></ul>
+          </section>
+        </div>
+
+        <div class="view" id="view-quick-kdm">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Quick KDM</h2>
+            </div>
+            <form id="quick-form" class="settings-grid">
+              <fieldset>
+                <div class="prop-field">
+                  <label for="quick-title">Title</label>
+                  <select id="quick-title"></select>
+                </div>
+                <div class="prop-field">
+                  <label for="quick-start">Start</label>
+                  <input type="datetime-local" id="quick-start">
+                </div>
+                <div class="prop-field">
+                  <label for="quick-end">End</label>
+                  <input type="datetime-local" id="quick-end">
+                </div>
+                <div class="prop-field">
+                  <label for="quick-zone">Time zone the start and end are in</label>
+                  <input type="text" id="quick-zone" list="time-zone-names" spellcheck="false">
+                </div>
+                <div class="prop-field">
+                  <label for="quick-formulation">Formulation</label>
+                  <select id="quick-formulation">
+                    <option value="">From the trusted devices</option>
+                    <option value="modified-transitional-1">Modified Transitional 1</option>
+                    <option value="multiple-modified-transitional-1">Multiple Modified Transitional 1</option>
+                    <option value="dci-any">DCI any</option>
+                    <option value="dci-specific">DCI specific</option>
+                  </select>
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>Recipient</legend>
+                <div class="prop-field">
+                  <button type="button" id="quick-pick" class="btn-sm">Certificate file…</button>
+                  <span id="quick-recipient" class="notes">No certificate yet</span>
+                </div>
+                <div class="certificate-fetch" id="quick-fetch"></div>
+                <div class="prop-field">
+                  <label for="quick-serial">Media block serial in the file name, the subject when empty</label>
+                  <input type="text" id="quick-serial" spellcheck="false">
+                </div>
+                <div class="prop-field">
+                  <label for="quick-devices">Trusted device certificates, one file per line</label>
+                  <textarea id="quick-devices" spellcheck="false"></textarea>
+                  <button type="button" id="quick-devices-pick" class="btn-sm">Add files…</button>
+                </div>
+              </fieldset>
+              <div class="form-actions">
+                <span id="quick-error" class="error-text"></span>
+                <button type="submit" class="btn-primary" title="Written to the KDM folder from Settings">Issue</button>
+              </div>
+            </form>
+            <ul id="quick-result" class="notes"></ul>
           </section>
         </div>
 
@@ -303,6 +366,10 @@
                 <legend>FLM Feeds</legend>
                 <div id="set-feeds"></div>
                 <button type="button" id="set-feed-add" class="btn-sm">Add feed</button>
+              </fieldset>
+              <fieldset>
+                <legend>Vendor Accounts, for fetching certificates by serial</legend>
+                <div id="set-vendor-accounts"></div>
               </fieldset>
               <fieldset>
                 <legend>Files</legend>

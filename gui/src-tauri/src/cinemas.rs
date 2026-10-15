@@ -1,8 +1,9 @@
 use crate::bookings::ENDING_SOON_WITHIN;
+use crate::recipient_certificates::CertificateSource;
 use crate::settings::StoredFeed;
 use crate::state::AppState;
 use postkit::certificate::{cert_info_from_pem, inspect_certificate_pem, ChainInspection};
-use postkit::kdm_distribution::cinema::{read_flm_cinema, CinemaDb, Screen};
+use postkit::kdm_distribution::cinema::{read_flm_cinema, CertSource, CinemaDb, Screen};
 use postkit::kdm_distribution::database::{
     CinemaId, CinemaSaveReport, DistributionDatabase, ImportReport, ScreenChange, ScreenId,
     StoredCinema,
@@ -294,6 +295,33 @@ pub fn update(
     Ok(())
 }
 
+// the screen keeps its name, media block serial and authorized devices
+pub fn set_screen_certificate(
+    database: &mut DistributionDatabase,
+    screen_id: ScreenId,
+    certificate: &CertificateSource,
+) -> Result<Vec<String>, String> {
+    let pem = certificate.pem()?;
+    let stored = database
+        .cinemas()?
+        .into_iter()
+        .find(|stored| stored.screen_ids.contains(&screen_id))
+        .ok_or_else(|| format!("screen {screen_id} not found"))?;
+    let index = stored
+        .screen_ids
+        .iter()
+        .position(|id| *id == screen_id)
+        .ok_or_else(|| format!("screen {screen_id} not found"))?;
+    let mut cinema = stored.cinema;
+    let current = &cinema.screens[index];
+    let mut replacement = Screen::new(&current.name, CertSource::Inline(pem))?;
+    replacement.device_serial = current.device_serial.clone();
+    replacement.authorized_devices = current.authorized_devices.clone();
+    cinema.screens[index] = replacement;
+    let report = database.save_cinema(&cinema)?;
+    save_report_lines(database, &cinema.name, &report)
+}
+
 pub fn import_dcpwizard_cinemas(
     database: &mut DistributionDatabase,
     path: &Path,
@@ -334,6 +362,15 @@ pub fn cinemas_update(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     state.with_database(|database| update(database, id, emails, time_zone))
+}
+
+#[tauri::command(async)]
+pub fn cinemas_set_screen_certificate(
+    screen_id: ScreenId,
+    certificate: CertificateSource,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    state.with_database(|database| set_screen_certificate(database, screen_id, &certificate))
 }
 
 #[tauri::command(async)]
@@ -750,6 +787,67 @@ mod tests {
             .not_checked
             .iter()
             .any(|note| note.contains("rule 12")));
+    }
+
+    #[test]
+    fn a_new_screen_certificate_keeps_the_devices_and_flags_the_issued_booking() {
+        let f = fixtures();
+        let directory = tempfile::tempdir().unwrap();
+        let (mut database, booking) = booked_database(f);
+        issue(
+            &mut database,
+            &signed_settings(f, directory.path()),
+            directory.path(),
+            booking,
+            IssueScope::PendingScreens,
+            IssueDestination {
+                output_folder: None,
+                send_email: false,
+            },
+            Utc::now(),
+        )
+        .unwrap();
+        let rex = database.cinemas().unwrap().remove(0);
+        let old_thumbprint = rex.cinema.screens[0].cert_thumbprint.clone();
+        let picked = directory.path().join("replacement.pem");
+        std::fs::copy(&f.security_managers[2].certificate, &picked).unwrap();
+
+        let lines = set_screen_certificate(
+            &mut database,
+            rex.screen_ids[0],
+            &CertificateSource::File { path: picked },
+        )
+        .unwrap();
+        let screen = database.cinema(rex.id).unwrap().cinema.screens[0].clone();
+        assert_eq!(
+            lines,
+            [
+                format!(
+                    "Rex / 1: recipient certificate replaced, {old_thumbprint} became {}",
+                    screen.cert_thumbprint
+                ),
+                format!("Rex: issued KDMs no longer match, reissue {DCNC_TITLE}"),
+            ]
+        );
+        assert_eq!(screen.cert_subject, "SM.Vendor.IMB.1003");
+        assert_eq!(screen.device_serial.as_deref(), Some("1001"));
+        assert_eq!(screen.authorized_devices.len(), 2);
+        assert_eq!(
+            pending_by_screen(&database)[0],
+            ("Rex / 1".to_string(), true)
+        );
+
+        let error = set_screen_certificate(
+            &mut database,
+            rex.screen_ids[0],
+            &CertificateSource::Pem {
+                pem: "not a certificate".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(!error.is_empty());
+        let kept = database.cinema(rex.id).unwrap().cinema.screens[0].clone();
+        assert_eq!(kept.cert_thumbprint, screen.cert_thumbprint);
     }
 
     #[test]

@@ -1,8 +1,9 @@
 // the page's whole issue path through the registered commands, as JSON over IPC
 use crate::state::AppState;
 use crate::test_fixtures::{
-    content_keys, dkdm, extended_flm, fixtures, local_window, site_list, FeedServer, CPL_ID,
-    DCNC_TITLE, FEED_SITE_LIST_PATH, SMPTE_EXAMPLE_FLM,
+    content_keys, dkdm, dolby_certificate_path, dolby_listing, extended_flm, fixtures,
+    local_window, site_list, vendor_servers, FeedServer, CPL_ID, DCNC_TITLE, DOLBY_LISTING_PATH,
+    DOLBY_SERIAL, FEED_SITE_LIST_PATH, SMPTE_EXAMPLE_FLM,
 };
 use postkit::certificate::{parse_kdm, unwrap_kdm};
 use serde::de::DeserializeOwned;
@@ -45,13 +46,21 @@ fn zip_entries(path: &str) -> Vec<(String, String)> {
 
 type MockWebview = tauri::WebviewWindow<tauri::test::MockRuntime>;
 
-// the app must outlive its webview
+fn app_state(directory: &std::path::Path) -> AppState {
+    AppState::new(
+        directory.join("config").join("settings.json"),
+        directory.join("data"),
+    )
+}
+
 fn mock_app(directory: &std::path::Path) -> (tauri::App<tauri::test::MockRuntime>, MockWebview) {
+    mock_app_with(app_state(directory))
+}
+
+// the app must outlive its webview
+fn mock_app_with(state: AppState) -> (tauri::App<tauri::test::MockRuntime>, MockWebview) {
     let app = crate::with_commands(tauri::test::mock_builder())
-        .manage(AppState::new(
-            directory.join("config").join("settings.json"),
-            directory.join("data"),
-        ))
+        .manage(state)
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -80,7 +89,8 @@ fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
             "outputFolder": null,
             "smtp": null,
             "smtpPassword": { "action": "keep" },
-            "feeds": []
+            "feeds": [],
+            "vendorAccounts": []
         }}),
     )
     .unwrap();
@@ -280,7 +290,8 @@ fn feeds_saved_from_the_page_refresh_into_cinemas_and_never_echo_the_password() 
                         "password": { "action": "set", "password": "hunter2" }
                     }
                 }
-            ]
+            ],
+            "vendorAccounts": []
         }}),
     )
     .unwrap();
@@ -333,4 +344,130 @@ fn a_kdm_and_a_certificate_file_inspect_over_ipc() {
     assert_eq!(certificates["kind"], json!("certificates"));
     assert_eq!(certificates["certificates"].as_array().unwrap().len(), 3);
     assert_eq!(certificates["check"]["failures"], json!([]));
+}
+
+fn vendor_chain_pem(leaf: &std::path::Path) -> String {
+    let f = fixtures();
+    [
+        leaf,
+        f.vendor_intermediate.as_path(),
+        f.vendor_root.as_path(),
+    ]
+    .iter()
+    .map(|path| std::fs::read_to_string(path).unwrap())
+    .collect()
+}
+
+#[test]
+fn a_fetched_certificate_gets_a_quick_kdm_and_a_wrong_one_is_refused_with_nothing_written() {
+    let f = fixtures();
+    let directory = tempfile::tempdir().unwrap();
+    let server = FeedServer::start();
+    server.serve(DOLBY_LISTING_PATH, dolby_listing());
+    server.serve(
+        &dolby_certificate_path(),
+        vendor_chain_pem(&f.security_managers[0].certificate),
+    );
+    let (_app, webview) =
+        mock_app_with(app_state(directory.path()).with_vendor_servers(vendor_servers(&server)));
+    let output = directory.path().join("kdms");
+    let _: Value = invoke(
+        &webview,
+        "settings_save",
+        json!({ "update": {
+            "databasePath": null,
+            "signerCertificate": f.distributor_signer,
+            "signerKey": f.distributor_signer_key,
+            "signerChain": f.distributor_chain,
+            "dkdmRecipientKey": f.distributor_signer_key,
+            "creationFacility": "DIS",
+            "outputFolder": output,
+            "smtp": null,
+            "smtpPassword": { "action": "keep" },
+            "feeds": [],
+            "vendorAccounts": [
+                { "vendor": "christie", "user": "projectionist", "password": { "action": "keep" } }
+            ]
+        }}),
+    )
+    .unwrap();
+    let dkdm_path = directory.path().join("dkdm.xml");
+    std::fs::write(&dkdm_path, dkdm(f, DCNC_TITLE, 30)).unwrap();
+    let title: Value =
+        invoke(&webview, "titles_import_dkdm", json!({ "path": dkdm_path })).unwrap();
+
+    let refused = invoke::<Value>(
+        &webview,
+        "certificates_fetch",
+        json!({ "vendor": "christie", "serial": "218281", "qubeType": null }),
+    )
+    .unwrap_err();
+    assert_eq!(
+        refused,
+        json!("set the Christie account in Settings before fetching")
+    );
+    assert!(server.requested_paths().is_empty());
+
+    let fetched: Value = invoke(
+        &webview,
+        "certificates_fetch",
+        json!({ "vendor": "dolby", "serial": DOLBY_SERIAL, "qubeType": null }),
+    )
+    .unwrap();
+    assert_eq!(fetched["subject"], json!("SM.Vendor.IMB.1001"));
+
+    let window = local_window();
+    let quick_kdm = |recipient: Value| {
+        json!({ "request": {
+            "titleId": title["id"],
+            "recipient": recipient,
+            "trustedDevices": [],
+            "mediaBlockSerial": DOLBY_SERIAL,
+            "start": window.start.format(LOCAL_TIME_FORMAT).to_string(),
+            "end": window.end.format(LOCAL_TIME_FORMAT).to_string(),
+            "timeZone": "Europe/London",
+            "formulation": null
+        }})
+    };
+    let issued: Value = invoke(
+        &webview,
+        "quick_kdm_issue",
+        quick_kdm(json!({ "kind": "pem", "pem": fetched["pem"] })),
+    )
+    .unwrap();
+    assert_eq!(issued["refusals"], json!([]));
+    let path = issued["written"]["path"].as_str().unwrap();
+    assert!(path.starts_with(output.to_str().unwrap()), "{path}");
+    assert!(
+        path.ends_with(&format!(
+            "k_Courier_FTR_EN-XX_51-HI-VI_{DOLBY_SERIAL}_{}_{}_DIS_OV_US-13.xml",
+            window.start.format("%Y%m%d"),
+            window.end.format("%Y%m%d")
+        )),
+        "{path}"
+    );
+    let xml = std::fs::read_to_string(path).unwrap();
+    let unwrapped = unwrap_kdm(&xml, &f.security_managers[0].key).unwrap();
+    for key in content_keys() {
+        assert_eq!(unwrapped.content_key(&key.key_id), Some(&key.content_key));
+    }
+
+    let wrong_role = directory.path().join("link-decryptor.pem");
+    std::fs::write(&wrong_role, vendor_chain_pem(&f.link_decryptor.certificate)).unwrap();
+    let refused: Value = invoke(
+        &webview,
+        "quick_kdm_issue",
+        quick_kdm(json!({ "kind": "file", "path": wrong_role })),
+    )
+    .unwrap();
+    assert_eq!(refused["written"], Value::Null);
+    let reasons = refused["refusals"].to_string();
+    assert!(reasons.contains("ST 430-2 rule 8 (role)"), "{reasons}");
+    assert_eq!(std::fs::read_dir(&output).unwrap().count(), 1);
+
+    let outbox: Value = invoke(&webview, "outbox_list", json!({})).unwrap();
+    let issues = outbox["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0]["bookingId"], Value::Null);
+    assert_eq!(issues[0]["fileName"], issued["written"]["kdm"]["fileName"]);
 }

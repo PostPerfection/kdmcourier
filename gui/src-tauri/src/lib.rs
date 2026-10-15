@@ -5,6 +5,8 @@ mod inspection;
 #[cfg(test)]
 mod live_check;
 mod outbox;
+mod quick_kdm;
+mod recipient_certificates;
 mod settings;
 mod state;
 #[cfg(test)]
@@ -32,6 +34,7 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         cinemas::cinemas_import_flm,
         cinemas::cinemas_refresh_feeds,
         cinemas::cinemas_update,
+        cinemas::cinemas_set_screen_certificate,
         cinemas::cinemas_remove,
         cinemas::cinemas_import_dcpwizard,
         cinemas::history_import_dcpwizard,
@@ -47,6 +50,8 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         outbox::outbox_resend,
         expiry::expiry_list,
         inspection::inspect_file,
+        recipient_certificates::certificates_fetch,
+        quick_kdm::quick_kdm_issue,
     ])
 }
 

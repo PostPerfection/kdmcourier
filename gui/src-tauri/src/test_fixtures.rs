@@ -1,9 +1,10 @@
-use crate::settings::Settings;
+use crate::settings::{PasswordChange, Settings, SettingsUpdate};
 use chrono::{Duration, Utc};
 use postkit::certificate::{
     build_kdm, generate_certificate, generate_chain, CertOptions, CertType, KdmConfig,
     KdmContentKey,
 };
+use postkit::kdm_distribution::certificate_fetch::VendorServers;
 use postkit::kdm_distribution::cinema::read_flm_cinema;
 use postkit::kdm_distribution::database::{BookingId, DistributionDatabase};
 use postkit::kdm_distribution::window::LocalWindow;
@@ -295,7 +296,47 @@ pub fn signed_settings(f: &Fixtures, data_dir: &Path) -> Settings {
         output_folder: None,
         smtp: None,
         feeds: Vec::new(),
+        vendor_accounts: Vec::new(),
     }
+}
+
+pub fn empty_settings_update() -> SettingsUpdate {
+    SettingsUpdate {
+        database_path: None,
+        signer_certificate: None,
+        signer_key: None,
+        signer_chain: Vec::new(),
+        dkdm_recipient_key: None,
+        creation_facility: String::new(),
+        output_folder: None,
+        smtp: None,
+        smtp_password: PasswordChange::Keep,
+        feeds: Vec::new(),
+        vendor_accounts: Vec::new(),
+    }
+}
+
+pub const DOLBY_SERIAL: &str = "218281828";
+pub const DOLBY_LISTING_PATH: &str = "/dolby/218xxx/";
+const DOLBY_CERTIFICATE_FILE: &str = "Dolby-DCP2000-218281828.cert.sha256.pem";
+
+// every vendor's base URL on the local server, dolby under /dolby
+pub fn vendor_servers(server: &FeedServer) -> VendorServers {
+    VendorServers {
+        dolby: server.url("/dolby"),
+        qube: server.url(""),
+        christie: server.url(""),
+        gdc: server.url(""),
+        barco: server.url(""),
+    }
+}
+
+pub fn dolby_listing() -> String {
+    format!("Dolby-DCP2000-218281828.cert.mpeg.pem\n{DOLBY_CERTIFICATE_FILE}\n")
+}
+
+pub fn dolby_certificate_path() -> String {
+    format!("{DOLBY_LISTING_PATH}{DOLBY_CERTIFICATE_FILE}")
 }
 
 pub const FEED_SITE_LIST_PATH: &str = "/feed/sitelist.xml";
@@ -325,6 +366,7 @@ pub fn site_list(facilities: &[(&str, &str)]) -> String {
 pub struct FeedServer {
     origin: String,
     bodies: Arc<Mutex<HashMap<String, String>>>,
+    requested_paths: Arc<Mutex<Vec<String>>>,
     held_response: Arc<Mutex<Option<ResponseGate>>>,
 }
 
@@ -345,7 +387,12 @@ impl FeedServer {
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let bodies = Arc::new(Mutex::new(HashMap::<String, String>::new()));
         let held_response = Arc::new(Mutex::new(None::<ResponseGate>));
-        let (served, gate) = (bodies.clone(), held_response.clone());
+        let requested_paths = Arc::new(Mutex::new(Vec::new()));
+        let (served, gate, requested) = (
+            bodies.clone(),
+            held_response.clone(),
+            requested_paths.clone(),
+        );
         std::thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
                 let mut request_line = String::new();
@@ -362,6 +409,7 @@ impl FeedServer {
                     let _ = gate.release.recv();
                 }
                 let path = request_line.split(' ').nth(1).unwrap_or_default();
+                requested.lock().unwrap().push(path.to_string());
                 let body = served.lock().unwrap().get(path).cloned();
                 let (status, body) = match body {
                     Some(body) => ("200 OK", body),
@@ -377,8 +425,13 @@ impl FeedServer {
         Self {
             origin,
             bodies,
+            requested_paths,
             held_response,
         }
+    }
+
+    pub fn requested_paths(&self) -> Vec<String> {
+        self.requested_paths.lock().unwrap().clone()
     }
 
     pub fn hold_next_response(&self) -> HeldResponse {

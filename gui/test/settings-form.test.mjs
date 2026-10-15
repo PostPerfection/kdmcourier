@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { feedUpdateFromFields, passwordChange, pathsFromText, settingsUpdateFromFields, smtpFromFields } from '../src/settings-form.js';
+import {
+  feedUpdateFromFields,
+  passwordChange,
+  pathsFromText,
+  settingsUpdateFromFields,
+  smtpFromFields,
+  vendorAccountUpdate,
+} from '../src/settings-form.js';
 
 const smtp = { host: ' smtp.dist.test ', port: '587', security: 'starttls', username: '', from: 'kdm@dist.test', bodyTemplate: '' };
 
@@ -36,6 +43,7 @@ test('the chain is one path per line and the facility code is upper case', () =>
     newPassword: '',
     clearPassword: false,
     feeds: [],
+    vendorAccounts: [],
   });
   assert.equal(update.databasePath, null);
   assert.equal(update.signerKey, null);
@@ -88,6 +96,14 @@ test('a feed row without a SiteList URL is dropped and a blank name becomes the 
     newPassword: '',
     clearPassword: false,
     feeds: [feed, { ...feed, siteListUrl: '' }],
+    vendorAccounts: [],
   });
   assert.equal(update.feeds.length, 1);
+});
+
+test('a vendor account sends its user trimmed and its password the way SMTP does', () => {
+  const row = { vendor: 'barco', user: ' projectionist ', newPassword: '', clearPassword: false };
+  assert.deepEqual(vendorAccountUpdate(row), { vendor: 'barco', user: 'projectionist', password: { action: 'keep' } });
+  assert.deepEqual(vendorAccountUpdate({ ...row, newPassword: 'hunter2' }).password, { action: 'set', password: 'hunter2' });
+  assert.deepEqual(vendorAccountUpdate({ ...row, newPassword: 'hunter2', clearPassword: true }).password, { action: 'clear' });
 });

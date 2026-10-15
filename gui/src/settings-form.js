@@ -52,6 +52,11 @@ export function feedUpdateFromFields(fields) {
   };
 }
 
+// a vendor row with no user removes the account
+export function vendorAccountUpdate({ vendor, user, newPassword, clearPassword }) {
+  return { vendor, user: user.trim(), password: passwordChange(newPassword, clearPassword) };
+}
+
 export function settingsUpdateFromFields(fields) {
   return {
     databasePath: fields.databasePath.trim() || null,
@@ -64,5 +69,6 @@ export function settingsUpdateFromFields(fields) {
     smtp: smtpFromFields(fields.smtp),
     smtpPassword: passwordChange(fields.newPassword, fields.clearPassword),
     feeds: fields.feeds.map(feedUpdateFromFields).filter((feed) => feed !== null),
+    vendorAccounts: fields.vendorAccounts.map(vendorAccountUpdate),
   };
 }

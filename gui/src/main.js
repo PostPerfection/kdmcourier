@@ -21,9 +21,11 @@ import {
   planRows,
   planScope,
 } from "./booking-form.js";
+import { VENDORS, fetchRequest, fetchedText, vendorLabel } from "./certificate-fetch.js";
 import { bookingExpiryRow, nothingExpires, signerChainRow } from "./expiry-rows.js";
 import { cinemaIssueStatus, deliveryText, failedBookingText, issuedStatus, outcomeRows } from "./issue-outcome.js";
 import { chainInspectionHtml, fileInspectionHtml } from "./inspection-view.js";
+import { quickKdmOutcome, quickKdmRequest } from "./quick-kdm-form.js";
 import { settingsUpdateFromFields } from "./settings-form.js";
 
 const FILE_FILTERS = {
@@ -42,6 +44,8 @@ const REFRESHING_FEEDS_STATUS = "Refreshing feeds";
 const NO_FEEDS_LINE = "No FLM feeds, add one in Settings";
 const NEW_FEED = { name: "", siteListUrl: "", authentication: { kind: "none" } };
 const ZONE_LIST_ID = "time-zone-names";
+const SCREEN_COLUMNS = 6;
+const NO_CERTIFICATE_CHANGE_LINE = "The certificate is the one already stored";
 
 const statusBadge = document.getElementById("status");
 let selectedBookingId = null;
@@ -74,6 +78,37 @@ async function pickFile(filterName, multiple = false) {
   return open({ multiple, filters: FILE_FILTERS[filterName] });
 }
 
+// onFetched gets the certificate and the serial it was fetched by
+function attachCertificateFetch(container, serial, onFetched) {
+  const options = VENDORS.map((vendor) => `<option value="${vendor.value}">${escapeHtml(vendor.label)}</option>`).join("");
+  container.innerHTML = `<select class="fetch-vendor">${options}</select>
+    <input type="text" class="fetch-serial" placeholder="Serial" value="${escapeHtml(serial)}" spellcheck="false">
+    <input type="text" class="fetch-qube-type" placeholder="Qube device type, such as QXPD" spellcheck="false" hidden>
+    <button type="button" class="btn-sm fetch-run">Fetch by serial</button>`;
+  const vendor = container.querySelector(".fetch-vendor");
+  const qubeType = container.querySelector(".fetch-qube-type");
+  vendor.addEventListener("change", () => {
+    qubeType.hidden = vendor.value !== "qube";
+  });
+  container.querySelector(".fetch-run").addEventListener("click", () =>
+    run(async () => {
+      const { request, error } = fetchRequest({
+        vendor: vendor.value,
+        serial: container.querySelector(".fetch-serial").value,
+        qubeType: qubeType.value,
+      });
+      if (error) {
+        showStatus(error);
+        return;
+      }
+      showStatus(`Fetching from ${vendorLabel(request.vendor)}`);
+      const certificate = await invoke("certificates_fetch", request);
+      showStatus(`Fetched ${fetchedText(certificate)}`);
+      await onFetched(certificate, request.serial);
+    }),
+  );
+}
+
 // views
 
 document.querySelectorAll(".sidebar-btn[data-view]").forEach((button) => {
@@ -95,6 +130,7 @@ function refreshView(view) {
     titles: refreshTitles,
     cinemas: refreshCinemas,
     bookings: refreshBookings,
+    "quick-kdm": fillQuickKdmForm,
     outbox: refreshOutbox,
     expiry: refreshExpiry,
     inspect: async () => {},
@@ -143,7 +179,7 @@ function certificateStatusHtml(certificate) {
 function screenCertificatesHtml(certificate) {
   if (!certificate.chain) return "";
   return `<tr>
-    <td colspan="5"><details><summary>Certificate details</summary>${chainInspectionHtml(certificate.chain)}</details></td>
+    <td colspan="${SCREEN_COLUMNS}"><details><summary>Certificate details</summary>${chainInspectionHtml(certificate.chain)}</details></td>
   </tr>`;
 }
 
@@ -156,6 +192,13 @@ function screenRowHtml(screen) {
     <td>${escapeHtml(devicesText(screen.devices))}</td>
     <td>${escapeHtml(certificate.subject)}</td>
     <td class="${statusClass}">${certificateStatusHtml(certificate)}${notesList(certificate.warnings)}</td>
+    <td>
+      <button type="button" class="btn-sm screen-certificate-file" title="Replace the recipient certificate">File…</button>
+      <button type="button" class="btn-sm screen-certificate-fetch" title="Replace it with the vendor's certificate">Fetch…</button>
+    </td>
+  </tr>
+  <tr class="screen-fetch-row" data-screen="${screen.id}" data-serial="${escapeHtml(screen.deviceSerial ?? "")}" hidden>
+    <td colspan="${SCREEN_COLUMNS}"><div class="certificate-fetch"></div></td>
   </tr>${screenCertificatesHtml(certificate)}`;
 }
 
@@ -183,7 +226,7 @@ function cinemaHtml(cinema) {
       <button type="button" class="btn-sm cinema-save">Save</button>
     </div>
     <table class="jobs-table">
-      <thead><tr><th>Screen</th><th>Media block</th><th>Authorized devices</th><th>Recipient</th><th>Certificates</th></tr></thead>
+      <thead><tr><th>Screen</th><th>Media block</th><th>Authorized devices</th><th>Recipient</th><th>Certificates</th><th></th></tr></thead>
       <tbody>${cinema.screens.map(screenRowHtml).join("")}</tbody>
     </table>
     <div class="cinema-pending"></div>
@@ -254,10 +297,35 @@ async function refreshCinemas() {
       }),
     );
   });
+  list.querySelectorAll(".screen-certificate-file").forEach((button) => {
+    const fetchRow = button.closest("tr").nextElementSibling;
+    button.addEventListener("click", () =>
+      run(async () => {
+        const path = await pickFile("certificate");
+        if (path) await setScreenCertificate(Number(fetchRow.dataset.screen), { kind: "file", path });
+      }),
+    );
+  });
+  list.querySelectorAll(".screen-certificate-fetch").forEach((button) => {
+    const fetchRow = button.closest("tr").nextElementSibling;
+    button.addEventListener("click", () => {
+      fetchRow.hidden = false;
+      attachCertificateFetch(fetchRow.querySelector(".certificate-fetch"), fetchRow.dataset.serial, (certificate) =>
+        setScreenCertificate(Number(fetchRow.dataset.screen), { kind: "pem", pem: certificate.pem }),
+      );
+    });
+  });
   list.querySelectorAll(".cinema-plan-pending").forEach((button) => {
     button.addEventListener("click", () => run(() => planCinemaPending(button.closest(".cinema-block"))));
   });
   return cinemas;
+}
+
+async function setScreenCertificate(screenId, certificate) {
+  const lines = await invoke("cinemas_set_screen_certificate", { screenId, certificate });
+  showImportResults(lines.length > 0 ? lines : [NO_CERTIFICATE_CHANGE_LINE]);
+  showStatus("Screen certificate saved");
+  await refreshCinemas();
 }
 
 // each import adds its lines under the ones before
@@ -519,6 +587,74 @@ document.getElementById("issue-run-all").addEventListener("click", () =>
   run(() => issueSelectedBooking(ISSUE_SCOPE.allScreens)),
 );
 
+// quick kdm
+
+// the certificate the next quick KDM goes to, a picked file or a fetched PEM
+let quickRecipient = null;
+const quickZoneInput = document.getElementById("quick-zone");
+const quickSerialInput = document.getElementById("quick-serial");
+
+function setQuickRecipient(recipient, text) {
+  quickRecipient = recipient;
+  document.getElementById("quick-recipient").textContent = text;
+}
+
+async function fillQuickKdmForm() {
+  const titles = await invoke("titles_list");
+  const select = document.getElementById("quick-title");
+  const chosen = select.value;
+  select.innerHTML = titles
+    .map((title) => `<option value="${title.id}">${escapeHtml(title.contentTitle)}</option>`)
+    .join("");
+  if (chosen) select.value = chosen;
+  if (!quickZoneInput.value) quickZoneInput.value = Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+attachCertificateFetch(document.getElementById("quick-fetch"), "", (certificate, serial) => {
+  setQuickRecipient({ kind: "pem", pem: certificate.pem }, fetchedText(certificate));
+  if (!quickSerialInput.value) quickSerialInput.value = serial;
+});
+
+document.getElementById("quick-pick").addEventListener("click", () =>
+  run(async () => {
+    const path = await pickFile("certificate");
+    if (path) setQuickRecipient({ kind: "file", path }, path);
+  }),
+);
+
+document.getElementById("quick-devices-pick").addEventListener("click", () =>
+  run(async () => {
+    const picked = await pickFile("certificate", true);
+    if (!picked) return;
+    const devices = document.getElementById("quick-devices");
+    const paths = Array.isArray(picked) ? picked : [picked];
+    devices.value = [devices.value.trim(), ...paths].filter(Boolean).join("\n");
+  }),
+);
+
+document.getElementById("quick-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  run(async () => {
+    const { request, error } = quickKdmRequest({
+      titleId: document.getElementById("quick-title").value,
+      recipient: quickRecipient,
+      trustedDevices: document.getElementById("quick-devices").value,
+      mediaBlockSerial: quickSerialInput.value,
+      start: document.getElementById("quick-start").value,
+      end: document.getElementById("quick-end").value,
+      timeZone: quickZoneInput.value,
+      formulation: document.getElementById("quick-formulation").value,
+    });
+    document.getElementById("quick-error").textContent = error ?? "";
+    if (error) return;
+    const { status, lines } = quickKdmOutcome(await invoke("quick_kdm_issue", { request }));
+    const result = document.getElementById("quick-result");
+    result.className = `notes status-${status}`;
+    result.innerHTML = lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+    showStatus(status === "issued" ? "KDM issued" : "KDM refused by the certificate checks");
+  });
+});
+
 // outbox
 
 async function refreshOutbox() {
@@ -630,6 +766,31 @@ const settingsFields = {
 };
 
 const feedList = document.getElementById("set-feeds");
+const vendorAccountList = document.getElementById("set-vendor-accounts");
+
+function vendorAccountRowHtml(account) {
+  const passwordPlaceholder = account.password.set ? "Stored, type to replace" : "";
+  return `<div class="vendor-account-row" data-vendor="${escapeHtml(account.vendor)}">
+    <div class="prop-field">
+      <label>${escapeHtml(vendorLabel(account.vendor))} User</label>
+      <input type="text" class="vendor-user" value="${escapeHtml(account.user)}" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="prop-field">
+      <label>Password</label>
+      <input type="password" class="vendor-password" autocomplete="new-password" placeholder="${passwordPlaceholder}">
+      <label><input type="checkbox" class="vendor-password-clear"> Remove the stored password</label>
+    </div>
+  </div>`;
+}
+
+function vendorAccountFields(row) {
+  return {
+    vendor: row.dataset.vendor,
+    user: row.querySelector(".vendor-user").value,
+    newPassword: row.querySelector(".vendor-password").value,
+    clearPassword: row.querySelector(".vendor-password-clear").checked,
+  };
+}
 
 function feedRowHtml(feed) {
   const authentication = feed.authentication;
@@ -734,6 +895,7 @@ function fillSettings(settings) {
   fields.smtpPasswordClear.checked = false;
   feedList.innerHTML = "";
   settings.feeds.forEach(addFeedRow);
+  vendorAccountList.innerHTML = settings.vendorAccounts.map(vendorAccountRowHtml).join("");
 }
 
 async function loadSettings() {
@@ -772,6 +934,7 @@ document.getElementById("settings-form").addEventListener("submit", (event) => {
       newPassword: fields.smtpPassword.value,
       clearPassword: fields.smtpPasswordClear.checked,
       feeds: [...feedList.querySelectorAll(".feed-row")].map(feedFields),
+      vendorAccounts: [...vendorAccountList.querySelectorAll(".vendor-account-row")].map(vendorAccountFields),
     });
     fillSettings(await invoke("settings_save", { update }));
     showStatus(SETTINGS_SAVED_STATUS);

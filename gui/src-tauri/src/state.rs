@@ -1,4 +1,5 @@
 use crate::settings::{Settings, SettingsUpdate, SettingsView};
+use postkit::kdm_distribution::certificate_fetch::VendorServers;
 use postkit::kdm_distribution::database::DistributionDatabase;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,6 +12,7 @@ struct OpenDatabase {
 pub struct AppState {
     pub settings_path: PathBuf,
     pub data_dir: PathBuf,
+    pub vendor_servers: VendorServers,
     database: Mutex<Option<OpenDatabase>>,
 }
 
@@ -19,7 +21,16 @@ impl AppState {
         Self {
             settings_path,
             data_dir,
+            vendor_servers: VendorServers::default(),
             database: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_vendor_servers(self, vendor_servers: VendorServers) -> Self {
+        Self {
+            vendor_servers,
+            ..self
         }
     }
 

@@ -54,7 +54,8 @@ textarea {
   gap: 8px;
   margin: 6px 0;
 }
-.feed-row {
+.feed-row,
+.vendor-account-row {
   border-bottom: 1px solid var(--border);
   padding-bottom: 6px;
   margin-bottom: 8px;
@@ -62,6 +63,13 @@ textarea {
 .feed-row:not([data-kind="basic"]) .feed-basic,
 .feed-row:not([data-kind="clientCertificate"]) .feed-client-certificate {
   display: none;
+}
+.certificate-fetch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
 }
 .inspection-fields th {
   text-align: left;
