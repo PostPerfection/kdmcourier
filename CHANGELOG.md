@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- An Inspect view opens a KDM or a PEM certificate file and shows what it holds without any private key: the KDM's title, CPL, window, recipient, key ids with their types, signature result and signer chain, and every certificate's full subject and issuer, validity, key, CA flag, key usage, thumbprint and roles with the ST 430-2 chain check. A tampered KDM still shows, with its signature failing. Each screen in Cinemas has the same certificate details under Certificate details.
 - Settings take a list of SMPTE ST 430-15 FLM feeds, each a name, a SiteList URL and no login, a user and password, or a client certificate. Cinemas has a Refresh feeds button that imports every new or changed FLM from them and lists one line per feed, then each screen change and the bookings to reissue as Import FLM does. A cinema renamed in its FLM is updated in place by its facility id, and a facility gone from a feed is listed and kept.
 
 ## [1.0.1] - 2026-10-15

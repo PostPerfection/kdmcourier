@@ -23,6 +23,7 @@ import {
 } from "./booking-form.js";
 import { bookingExpiryRow, nothingExpires, signerChainRow } from "./expiry-rows.js";
 import { cinemaIssueStatus, deliveryText, failedBookingText, issuedStatus, outcomeRows } from "./issue-outcome.js";
+import { chainInspectionHtml, fileInspectionHtml } from "./inspection-view.js";
 import { settingsUpdateFromFields } from "./settings-form.js";
 
 const FILE_FILTERS = {
@@ -32,6 +33,7 @@ const FILE_FILTERS = {
   flm: [{ name: "FLM", extensions: ["xml"] }],
   json: [{ name: "DCP Wizard cinemas", extensions: ["json"] }],
   jsonl: [{ name: "DCP Wizard KDM history", extensions: ["jsonl"] }],
+  inspect: [{ name: "KDM or certificate", extensions: ["xml", "pem", "crt", "cer"] }],
 };
 const FOLDER_FILTER = "folder";
 const READY_STATUS = "Ready";
@@ -95,6 +97,7 @@ function refreshView(view) {
     bookings: refreshBookings,
     outbox: refreshOutbox,
     expiry: refreshExpiry,
+    inspect: async () => {},
     settings: loadSettings,
   };
   run(refreshers[view]);
@@ -137,6 +140,13 @@ function certificateStatusHtml(certificate) {
   return `<details><summary>${summary}</summary>${notesList(certificate.failures)}</details>`;
 }
 
+function screenCertificatesHtml(certificate) {
+  if (!certificate.chain) return "";
+  return `<tr>
+    <td colspan="5"><details><summary>Certificate details</summary>${chainInspectionHtml(certificate.chain)}</details></td>
+  </tr>`;
+}
+
 function screenRowHtml(screen) {
   const certificate = screen.certificate;
   const statusClass = certificate.failures.length > 0 ? "status-refused" : "status-issued";
@@ -146,7 +156,7 @@ function screenRowHtml(screen) {
     <td>${escapeHtml(devicesText(screen.devices))}</td>
     <td>${escapeHtml(certificate.subject)}</td>
     <td class="${statusClass}">${certificateStatusHtml(certificate)}${notesList(certificate.warnings)}</td>
-  </tr>`;
+  </tr>${screenCertificatesHtml(certificate)}`;
 }
 
 function cinemaPendingHtml(cinema) {
@@ -586,6 +596,18 @@ async function refreshExpiry() {
 }
 
 document.getElementById("expiry-refresh").addEventListener("click", () => run(refreshExpiry));
+
+// inspect
+
+document.getElementById("inspect-open").addEventListener("click", () =>
+  run(async () => {
+    const path = await pickFile("inspect");
+    if (!path) return;
+    const inspection = await invoke("inspect_file", { path });
+    document.getElementById("inspect-title").textContent = path;
+    document.getElementById("inspect-result").innerHTML = fileInspectionHtml(inspection);
+  }),
+);
 
 // settings
 

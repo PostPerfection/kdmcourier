@@ -1,6 +1,7 @@
 mod bookings;
 mod cinemas;
 mod expiry;
+mod inspection;
 #[cfg(test)]
 mod live_check;
 mod outbox;
@@ -45,6 +46,7 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         outbox::outbox_list,
         outbox::outbox_resend,
         expiry::expiry_list,
+        inspection::inspect_file,
     ])
 }
 

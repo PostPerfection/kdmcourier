@@ -1,7 +1,7 @@
 use crate::bookings::ENDING_SOON_WITHIN;
 use crate::settings::StoredFeed;
 use crate::state::AppState;
-use postkit::certificate::cert_info_from_pem;
+use postkit::certificate::{cert_info_from_pem, inspect_certificate_pem, ChainInspection};
 use postkit::kdm_distribution::cinema::{read_flm_cinema, CinemaDb, Screen};
 use postkit::kdm_distribution::database::{
     CinemaId, CinemaSaveReport, DistributionDatabase, ImportReport, ScreenChange, ScreenId,
@@ -30,6 +30,7 @@ pub struct CertificateStatus {
     pub failures: Vec<String>,
     pub warnings: Vec<String>,
     pub not_checked: Vec<String>,
+    pub chain: Option<ChainInspection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -62,7 +63,8 @@ fn certificate_status(
     now: chrono::DateTime<chrono::Utc>,
 ) -> CertificateStatus {
     let report = check_screen_certificates(label, screen, now);
-    let info = screen.cert.pem().and_then(|pem| cert_info_from_pem(&pem));
+    let pem = screen.cert.pem();
+    let info = pem.clone().and_then(|pem| cert_info_from_pem(&pem));
     CertificateStatus {
         subject: info
             .as_ref()
@@ -72,6 +74,9 @@ fn certificate_status(
         failures: report.failures.iter().map(ToString::to_string).collect(),
         warnings: report.warnings.iter().map(ToString::to_string).collect(),
         not_checked: report.not_checked,
+        chain: pem
+            .ok()
+            .and_then(|pem| inspect_certificate_pem(&pem, now).ok()),
     }
 }
 
@@ -725,6 +730,20 @@ mod tests {
             screen.certificate.subject.contains("SM."),
             "{}",
             screen.certificate.subject
+        );
+        let chain = screen.certificate.chain.as_ref().unwrap();
+        let common_names: Vec<&str> = chain
+            .certificates
+            .iter()
+            .map(|certificate| certificate.subject.rsplit_once(",CN=").unwrap().1)
+            .collect();
+        assert_eq!(
+            common_names,
+            [
+                "SM.Vendor.IMB.1001",
+                ".Vendor.smpte-430-2.INTERMEDIATE",
+                ".Vendor.smpte-430-2.ROOT"
+            ]
         );
         assert!(screen
             .certificate

@@ -63,3 +63,11 @@ textarea {
 .feed-row:not([data-kind="clientCertificate"]) .feed-client-certificate {
   display: none;
 }
+.inspection-fields th {
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.inspection-fields td {
+  white-space: pre-line;
+}

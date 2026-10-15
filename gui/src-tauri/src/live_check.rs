@@ -304,3 +304,33 @@ fn feeds_saved_from_the_page_refresh_into_cinemas_and_never_echo_the_password() 
     let cinemas: Value = invoke(&webview, "cinemas_list", json!({})).unwrap();
     assert_eq!(cinemas[0]["name"], json!("Rex"));
 }
+
+#[test]
+fn a_kdm_and_a_certificate_file_inspect_over_ipc() {
+    let f = fixtures();
+    let directory = tempfile::tempdir().unwrap();
+    let (_app, webview) = mock_app(directory.path());
+    let kdm_path = directory.path().join("dkdm.xml");
+    std::fs::write(&kdm_path, dkdm(f, DCNC_TITLE, 30)).unwrap();
+    let pem_path = directory.path().join("chain.pem");
+    let chain_pem: String = std::iter::once(&f.distributor_signer)
+        .chain(&f.distributor_chain)
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect();
+    std::fs::write(&pem_path, chain_pem).unwrap();
+
+    let kdm: Value = invoke(&webview, "inspect_file", json!({ "path": kdm_path })).unwrap();
+    assert_eq!(kdm["kind"], json!("kdm"));
+    assert_eq!(kdm["metadata"]["content_title"], json!(DCNC_TITLE));
+    assert_eq!(kdm["signature"]["result"], json!("passed"));
+    assert_eq!(kdm["key_ids"][0]["key_type"], json!("MDIK"));
+    let signer_chain = kdm["signer_chain"]["certificates"].as_array().unwrap();
+    assert_eq!(signer_chain.len(), 3);
+    assert_eq!(signer_chain[0]["roles"], json!(["CS"]));
+
+    let certificates: Value =
+        invoke(&webview, "inspect_file", json!({ "path": pem_path })).unwrap();
+    assert_eq!(certificates["kind"], json!("certificates"));
+    assert_eq!(certificates["certificates"].as_array().unwrap().len(), 3);
+    assert_eq!(certificates["check"]["failures"], json!([]));
+}
