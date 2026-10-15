@@ -332,7 +332,7 @@
     <div class="download-grid">
         <div class="download-card">
             <h3>Windows</h3>
-            <p class="files">Installer <code>.exe</code> / <code>.msi</code></p>
+            <p class="files">Installer <code>.exe</code> / <code>.msi</code>, x86_64</p>
             <a href="https://github.com/PostPerfection/kdmcourier/releases/latest" class="btn btn-primary">Download latest</a>
         </div>
         <div class="download-card">
@@ -342,7 +342,7 @@
         </div>
         <div class="download-card">
             <h3>Linux</h3>
-            <p class="files"><code>.AppImage</code> / <code>.deb</code> / <code>.rpm</code></p>
+            <p class="files"><code>.AppImage</code> / <code>.deb</code> / <code>.rpm</code>, x86_64</p>
             <a href="https://github.com/PostPerfection/kdmcourier/releases/latest" class="btn btn-primary">Download latest</a>
         </div>
     </div>
@@ -371,7 +371,7 @@
         </div>
         <div class="feature-card">
             <h3>DCP Wizard import</h3>
-            <p>DCP Wizard's <code>cinemas.json</code> and <code>kdm-history.jsonl</code> import as they are, with a list of anything that was skipped.</p>
+            <p>DCP Wizard's <code>cinemas.json</code> imports as it is, and each screen whose certificate cannot be read is listed as skipped. Its <code>kdm-history.jsonl</code> imports into the Outbox's list of issued KDMs.</p>
         </div>
     </div>
 
@@ -383,7 +383,7 @@
         </div>
         <div class="feature-card">
             <h3>Bookings per screen</h3>
-            <p>A booking is a title, the screens, and a start and end in each cinema's local time. The formulation comes from each screen's devices, or you pick Modified Transitional 1, Multiple Modified Transitional 1, DCI any or DCI specific. Edit changes the screens, dates and formulation.</p>
+            <p>A booking is a title, the screens, and a start and end in each cinema's local time. The formulation comes from each screen's devices, or you pick Modified Transitional 1, Multiple Modified Transitional 1, DCI any or DCI specific. Edit changes the screens, dates and formulation. Remove deletes a booking.</p>
         </div>
         <div class="feature-card">
             <h3>Per-screen reissue</h3>
@@ -395,7 +395,7 @@
         </div>
         <div class="feature-card">
             <h3>Issue pending at one cinema</h3>
-            <p>A cinema with booked screens that need a KDM shows their count. Issue pending plans and issues every booking's pending screens there, one ZIP per booking. A booking that fails is listed with its error and the others still issue.</p>
+            <p>A cinema with booked screens that need a KDM shows their count. Issue pending shows each booking's plan for its pending screens there. Issue then writes one ZIP per booking to the KDM folder from Settings and emails it when asked. A booking that fails is listed with its title and error, and the others still issue.</p>
         </div>
     </div>
 
@@ -403,7 +403,7 @@
     <div class="features-grid">
         <div class="feature-card">
             <h3>Check before you issue</h3>
-            <p>Check shows each screen's formulation, window and warnings, and the screens that would be refused with the rule they fail. Nothing is written until you press Issue.</p>
+            <p>Check shows each screen's formulation, window and warnings, and the screens that would be refused with the rule they fail. It covers the screens that need a KDM, or every screen when none do. Nothing is written until you press Issue.</p>
         </div>
         <div class="feature-card">
             <h3>What a screen must pass</h3>
@@ -433,6 +433,10 @@
             <h3>Expiry view</h3>
             <p>Lists each recipient certificate, authorized device certificate and DKDM that expires before a running booking ends, and the signer chain's certificates with the bookings that end after them. A booking at a cinema with no usable time zone is listed as not checked.</p>
         </div>
+        <div class="feature-card">
+            <h3>Signer and settings</h3>
+            <p>Settings holds the signer certificate, its key and the CA certificates above it, the key your DKDMs are addressed to, the three letter creation facility code, the KDM folder, the SMTP server and the database location.</p>
+        </div>
     </div>
 </section>
 
@@ -450,7 +454,7 @@
             <div class="step-num">2</div>
             <h4>Run the desktop app</h4>
             <p><code>cd kdmcourier/gui &amp;&amp; pnpm install &amp;&amp; pnpm tauri dev</code></p>
-            <p>postkit links FFmpeg, which pkg-config must find at build time.</p>
+            <p>Building from source is Linux only for now. postkit links FFmpeg, which pkg-config must find at build time.</p>
         </div>
         <div class="install-step">
             <div class="step-num">3</div>
