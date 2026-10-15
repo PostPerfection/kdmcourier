@@ -836,6 +836,17 @@ mod tests {
             pending_by_screen(&database)[0],
             ("Rex / 1".to_string(), true)
         );
+        let row_certificate = &list(&database, Utc::now()).unwrap()[0].screens[0].certificate;
+        assert!(
+            row_certificate.failures.is_empty(),
+            "{:?}",
+            row_certificate.failures
+        );
+        assert!(
+            row_certificate.warnings[0].contains("no chain"),
+            "{:?}",
+            row_certificate.warnings
+        );
 
         let error = set_screen_certificate(
             &mut database,

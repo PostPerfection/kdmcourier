@@ -359,14 +359,14 @@ fn vendor_chain_pem(leaf: &std::path::Path) -> String {
 }
 
 #[test]
-fn a_fetched_certificate_gets_a_quick_kdm_and_a_wrong_one_is_refused_with_nothing_written() {
+fn a_fetched_lone_certificate_gets_a_quick_kdm_with_a_warning_and_a_wrong_one_is_refused() {
     let f = fixtures();
     let directory = tempfile::tempdir().unwrap();
     let server = FeedServer::start();
     server.serve(DOLBY_LISTING_PATH, dolby_listing());
     server.serve(
         &dolby_certificate_path(),
-        vendor_chain_pem(&f.security_managers[0].certificate),
+        std::fs::read_to_string(&f.security_managers[0].certificate).unwrap(),
     );
     let (_app, webview) =
         mock_app_with(app_state(directory.path()).with_vendor_servers(vendor_servers(&server)));
@@ -436,6 +436,8 @@ fn a_fetched_certificate_gets_a_quick_kdm_and_a_wrong_one_is_refused_with_nothin
     )
     .unwrap();
     assert_eq!(issued["refusals"], json!([]));
+    let warnings = issued["written"]["kdm"]["warnings"].to_string();
+    assert!(warnings.contains("no chain"), "{warnings}");
     let path = issued["written"]["path"].as_str().unwrap();
     assert!(path.starts_with(output.to_str().unwrap()), "{path}");
     assert!(
