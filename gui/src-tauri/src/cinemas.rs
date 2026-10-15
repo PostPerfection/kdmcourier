@@ -847,6 +847,9 @@ mod tests {
             "{:?}",
             row_certificate.warnings
         );
+        let details = &row_certificate.chain.as_ref().unwrap().check;
+        assert!(details.passed(), "{details:?}");
+        assert!(details.issuers_missing);
 
         let error = set_screen_certificate(
             &mut database,
