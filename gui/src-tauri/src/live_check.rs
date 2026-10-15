@@ -1,7 +1,8 @@
 // the page's whole issue path through the registered commands, as JSON over IPC
 use crate::state::AppState;
 use crate::test_fixtures::{
-    content_keys, dkdm, extended_flm, fixtures, local_window, CPL_ID, DCNC_TITLE, SMPTE_EXAMPLE_FLM,
+    content_keys, dkdm, extended_flm, fixtures, local_window, site_list, FeedServer, CPL_ID,
+    DCNC_TITLE, FEED_SITE_LIST_PATH, SMPTE_EXAMPLE_FLM,
 };
 use postkit::certificate::{parse_kdm, unwrap_kdm};
 use serde::de::DeserializeOwned;
@@ -11,7 +12,7 @@ use std::io::Read;
 const LOCAL_TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 
 fn invoke<T: DeserializeOwned>(
-    webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+    webview: &MockWebview,
     command: &str,
     arguments: Value,
 ) -> Result<T, Value> {
@@ -42,21 +43,29 @@ fn zip_entries(path: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-#[test]
-fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
-    let f = fixtures();
-    let directory = tempfile::tempdir().unwrap();
-    let data_dir = directory.path().join("data");
+type MockWebview = tauri::WebviewWindow<tauri::test::MockRuntime>;
+
+// the app must outlive its webview
+fn mock_app(directory: &std::path::Path) -> (tauri::App<tauri::test::MockRuntime>, MockWebview) {
     let app = crate::with_commands(tauri::test::mock_builder())
         .manage(AppState::new(
-            directory.path().join("config").join("settings.json"),
-            data_dir.clone(),
+            directory.join("config").join("settings.json"),
+            directory.join("data"),
         ))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
+    (app, webview)
+}
+
+#[test]
+fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
+    let f = fixtures();
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path().join("data");
+    let (_app, webview) = mock_app(directory.path());
 
     let settings: Value = invoke(
         &webview,
@@ -70,7 +79,8 @@ fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
             "creationFacility": "DIS",
             "outputFolder": null,
             "smtp": null,
-            "smtpPassword": { "action": "keep" }
+            "smtpPassword": { "action": "keep" },
+            "feeds": []
         }}),
     )
     .unwrap();
@@ -225,4 +235,72 @@ fn an_flm_a_dkdm_and_a_booking_issue_kdms_that_unwrap_to_the_content_keys() {
         refused.to_string().contains("not an IANA time zone"),
         "{refused}"
     );
+}
+
+#[test]
+fn feeds_saved_from_the_page_refresh_into_cinemas_and_never_echo_the_password() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_app, webview) = mock_app(directory.path());
+    let server = FeedServer::start();
+    server.serve(
+        "/flm/Rex.xml",
+        extended_flm(fixtures(), "Rex", "Europe/London"),
+    );
+    server.serve(
+        FEED_SITE_LIST_PATH,
+        site_list(&[("Rex", "2026-10-01T10:00:00Z")]),
+    );
+    let locked_url = server.url("/locked/sitelist.xml");
+
+    let settings: Value = invoke(
+        &webview,
+        "settings_save",
+        json!({ "update": {
+            "databasePath": null,
+            "signerCertificate": null,
+            "signerKey": null,
+            "signerChain": [],
+            "dkdmRecipientKey": null,
+            "creationFacility": "DIS",
+            "outputFolder": null,
+            "smtp": null,
+            "smtpPassword": { "action": "keep" },
+            "feeds": [
+                {
+                    "name": "Exhibitor",
+                    "siteListUrl": server.url(FEED_SITE_LIST_PATH),
+                    "authentication": { "kind": "none" }
+                },
+                {
+                    "name": "Locked",
+                    "siteListUrl": locked_url,
+                    "authentication": {
+                        "kind": "basic",
+                        "username": "distributor",
+                        "password": { "action": "set", "password": "hunter2" }
+                    }
+                }
+            ]
+        }}),
+    )
+    .unwrap();
+    assert!(!settings.to_string().contains("hunter2"), "{settings}");
+    assert_eq!(
+        settings["feeds"][1]["authentication"],
+        json!({ "kind": "basic", "username": "distributor", "password": { "set": true } })
+    );
+
+    let lines: Vec<String> = invoke(&webview, "cinemas_refresh_feeds", json!({})).unwrap();
+    assert_eq!(
+        lines,
+        [
+            "Exhibitor: 1 FLMs imported, 0 failed, 0 no longer listed".to_string(),
+            "Rex: new cinema (2 screens)".to_string(),
+            format!(
+                "Locked: the feed {locked_url} has credentials, which are only sent over https"
+            ),
+        ]
+    );
+    let cinemas: Value = invoke(&webview, "cinemas_list", json!({})).unwrap();
+    assert_eq!(cinemas[0]["name"], json!("Rex"));
 }

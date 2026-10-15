@@ -1,6 +1,7 @@
 use postkit::certificate::{AudioForensicMarking, PictureForensicMarking};
 use postkit::kdm_distribution::database::IssueSettings;
 use postkit::kdm_distribution::email::{Security, SmtpConfig};
+use postkit::kdm_distribution::flm_exchange::{Feed, FeedAuthentication};
 use postkit::kdm_distribution::issue::KdmSigner;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ pub fn settings_path() -> PathBuf {
     postkit::preferences::config_dir(crate::APP_DIRECTORY_NAME).join(SETTINGS_FILE)
 }
 
-// written with owner-only permissions, it holds the SMTP password as dcpwizard's smtp file does
+// written with owner-only permissions, it holds the SMTP and feed passwords as dcpwizard's smtp file does
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -27,6 +28,101 @@ pub struct Settings {
     pub creation_facility: String,
     pub output_folder: Option<PathBuf>,
     pub smtp: Option<SmtpConfig>,
+    pub feeds: Vec<StoredFeed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedSetting<Password> {
+    pub name: String,
+    pub site_list_url: String,
+    pub authentication: FeedAuthenticationSetting<Password>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum FeedAuthenticationSetting<Password> {
+    None,
+    Basic {
+        username: String,
+        password: Password,
+    },
+    ClientCertificate {
+        certificate_chain: PathBuf,
+        private_key: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PasswordStatus {
+    pub set: bool,
+}
+
+pub type StoredFeed = FeedSetting<Option<String>>;
+pub type FeedView = FeedSetting<PasswordStatus>;
+pub type FeedUpdate = FeedSetting<PasswordChange>;
+
+impl<Password> FeedSetting<Password> {
+    fn with_password<Other>(self, password: impl FnOnce(Password) -> Other) -> FeedSetting<Other> {
+        let authentication = match self.authentication {
+            FeedAuthenticationSetting::None => FeedAuthenticationSetting::None,
+            FeedAuthenticationSetting::Basic {
+                username,
+                password: current,
+            } => FeedAuthenticationSetting::Basic {
+                username,
+                password: password(current),
+            },
+            FeedAuthenticationSetting::ClientCertificate {
+                certificate_chain,
+                private_key,
+            } => FeedAuthenticationSetting::ClientCertificate {
+                certificate_chain,
+                private_key,
+            },
+        };
+        FeedSetting {
+            name: self.name,
+            site_list_url: self.site_list_url,
+            authentication,
+        }
+    }
+}
+
+impl StoredFeed {
+    fn password(&self) -> Option<&String> {
+        match &self.authentication {
+            FeedAuthenticationSetting::Basic { password, .. } => password.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn feed(&self) -> Result<Feed, String> {
+        let authentication = match &self.authentication {
+            FeedAuthenticationSetting::None => FeedAuthentication::None,
+            FeedAuthenticationSetting::Basic { username, password } => FeedAuthentication::Basic {
+                username: username.clone(),
+                password: password
+                    .clone()
+                    .ok_or("set the feed's password in Settings before refreshing")?,
+            },
+            FeedAuthenticationSetting::ClientCertificate {
+                certificate_chain,
+                private_key,
+            } => FeedAuthentication::ClientCertificate {
+                certificate_chain: certificate_chain.clone(),
+                private_key: private_key.clone(),
+            },
+        };
+        Ok(Feed {
+            site_list_url: self.site_list_url.clone(),
+            authentication,
+        })
+    }
 }
 
 // the SMTP settings the page sees and edits, never the password
@@ -53,6 +149,7 @@ pub struct SettingsView {
     pub output_folder: Option<PathBuf>,
     pub smtp: Option<SmtpFields>,
     pub smtp_password_set: bool,
+    pub feeds: Vec<FeedView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -61,6 +158,16 @@ pub enum PasswordChange {
     Keep,
     Set { password: String },
     Clear,
+}
+
+impl PasswordChange {
+    fn applied_to(self, kept: Option<String>) -> Option<String> {
+        match self {
+            PasswordChange::Keep => kept,
+            PasswordChange::Set { password } => Some(password),
+            PasswordChange::Clear => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,6 +182,7 @@ pub struct SettingsUpdate {
     pub output_folder: Option<PathBuf>,
     pub smtp: Option<SmtpFields>,
     pub smtp_password: PasswordChange,
+    pub feeds: Vec<FeedUpdate>,
 }
 
 impl Settings {
@@ -120,20 +228,40 @@ impl Settings {
                 .smtp
                 .as_ref()
                 .is_some_and(|smtp| smtp.password.is_some()),
+            feeds: self
+                .feeds
+                .iter()
+                .map(|feed| {
+                    feed.clone().with_password(|password| PasswordStatus {
+                        set: password.is_some(),
+                    })
+                })
+                .collect(),
         }
     }
 
     pub fn updated(&self, update: SettingsUpdate) -> Settings {
-        let kept_password = self.smtp.as_ref().and_then(|smtp| smtp.password.clone());
-        let password = match update.smtp_password {
-            PasswordChange::Keep => kept_password,
-            PasswordChange::Set { password } => Some(password),
-            PasswordChange::Clear => None,
-        };
+        let password = update
+            .smtp_password
+            .applied_to(self.smtp.as_ref().and_then(|smtp| smtp.password.clone()));
         let kept_subject = self
             .smtp
             .as_ref()
             .and_then(|smtp| smtp.subject_template.clone());
+        let feeds = update
+            .feeds
+            .into_iter()
+            .map(|feed| {
+                // a password never follows a feed to another server
+                let kept_password = self
+                    .feeds
+                    .iter()
+                    .find(|stored| stored.site_list_url == feed.site_list_url)
+                    .and_then(StoredFeed::password)
+                    .cloned();
+                feed.with_password(|change| change.applied_to(kept_password))
+            })
+            .collect();
         Settings {
             database_path: update.database_path,
             signer_certificate: update.signer_certificate,
@@ -152,6 +280,7 @@ impl Settings {
                 subject_template: kept_subject,
                 body_template: fields.body_template,
             }),
+            feeds,
         }
     }
 
@@ -237,6 +366,80 @@ mod tests {
             output_folder: None,
             smtp: Some(smtp_fields()),
             smtp_password: password,
+            feeds: Vec::new(),
+        }
+    }
+
+    const FEED_URL: &str = "https://tms.exhibitor.test/sitelist.xml";
+
+    fn basic_feed(site_list_url: &str, password: PasswordChange) -> FeedUpdate {
+        FeedSetting {
+            name: "Exhibitor".into(),
+            site_list_url: site_list_url.into(),
+            authentication: FeedAuthenticationSetting::Basic {
+                username: "distributor".into(),
+                password,
+            },
+        }
+    }
+
+    fn with_feeds(feeds: Vec<FeedUpdate>) -> SettingsUpdate {
+        SettingsUpdate {
+            feeds,
+            ..update(PasswordChange::Keep)
+        }
+    }
+
+    fn feed_password(settings: &Settings) -> Option<&str> {
+        settings.feeds[0].password().map(String::as_str)
+    }
+
+    #[test]
+    fn a_feed_password_is_stored_never_shown_and_kept_only_for_the_same_site_list() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(SETTINGS_FILE);
+        let saved = Settings::default().updated(with_feeds(vec![basic_feed(
+            FEED_URL,
+            PasswordChange::Set {
+                password: "hunter2".into(),
+            },
+        )]));
+        saved.save(&path).unwrap();
+        let loaded = Settings::load(&path).unwrap();
+        assert_eq!(loaded, saved);
+        assert_eq!(feed_password(&loaded), Some("hunter2"));
+
+        let view = loaded.view(directory.path());
+        let view_json = serde_json::to_string(&view).unwrap();
+        assert!(!view_json.contains("hunter2"), "{view_json}");
+        assert_eq!(
+            view.feeds[0].authentication,
+            FeedAuthenticationSetting::Basic {
+                username: "distributor".into(),
+                password: PasswordStatus { set: true },
+            }
+        );
+
+        let kept = loaded.updated(with_feeds(vec![basic_feed(FEED_URL, PasswordChange::Keep)]));
+        assert_eq!(feed_password(&kept), Some("hunter2"));
+        let moved = kept.updated(with_feeds(vec![basic_feed(
+            "https://other.example.test/sitelist.xml",
+            PasswordChange::Keep,
+        )]));
+        assert_eq!(feed_password(&moved), None);
+        let cleared = kept.updated(with_feeds(vec![basic_feed(
+            FEED_URL,
+            PasswordChange::Clear,
+        )]));
+        assert_eq!(feed_password(&cleared), None);
+        let error = cleared.feeds[0].feed().unwrap_err();
+        assert!(error.contains("password"), "{error}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
         }
     }
 

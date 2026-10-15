@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Settings take a list of SMPTE ST 430-15 FLM feeds, each a name, a SiteList URL and no login, a user and password, or a client certificate. Cinemas has a Refresh feeds button that imports every new or changed FLM from them and lists one line per feed, then each screen change and the bookings to reissue as Import FLM does. A cinema renamed in its FLM is updated in place by its facility id, and a facility gone from a feed is listed and kept.
+
 ## [1.0.1] - 2026-10-15
 
 ### Changed

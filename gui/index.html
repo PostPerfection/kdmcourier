@@ -68,6 +68,7 @@
               <h2>Cinemas</h2>
               <div class="panel-actions">
                 <button id="cinemas-import-flm" class="btn-sm">Import FLM</button>
+                <button id="cinemas-refresh-feeds" class="btn-sm" title="Every FLM feed in Settings">Refresh feeds</button>
                 <button id="cinemas-import-dcpwizard" class="btn-sm" title="DCP Wizard's cinemas.json">Import DCP Wizard cinemas</button>
                 <button id="history-import-dcpwizard" class="btn-sm" title="DCP Wizard's kdm-history.jsonl">Import DCP Wizard history</button>
               </div>
@@ -282,6 +283,11 @@
                   <label for="set-smtp-body">Message, {title} and {cinema} are filled in</label>
                   <textarea id="set-smtp-body"></textarea>
                 </div>
+              </fieldset>
+              <fieldset>
+                <legend>FLM Feeds</legend>
+                <div id="set-feeds"></div>
+                <button type="button" id="set-feed-add" class="btn-sm">Add feed</button>
               </fieldset>
               <fieldset>
                 <legend>Files</legend>

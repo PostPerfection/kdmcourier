@@ -1,4 +1,5 @@
 use crate::bookings::ENDING_SOON_WITHIN;
+use crate::settings::StoredFeed;
 use crate::state::AppState;
 use postkit::certificate::cert_info_from_pem;
 use postkit::kdm_distribution::cinema::{read_flm_cinema, CinemaDb, Screen};
@@ -7,6 +8,7 @@ use postkit::kdm_distribution::database::{
     StoredCinema,
 };
 use postkit::kdm_distribution::expiry::bookings_ending_within;
+use postkit::kdm_distribution::flm_exchange::{apply_feed_refresh, refresh_feed, FeedImportReport};
 use postkit::kdm_distribution::history;
 use postkit::kdm_distribution::screen_checks::check_screen_certificates;
 use postkit::kdm_distribution::window::check_time_zone;
@@ -138,16 +140,18 @@ pub fn list(
         .collect()
 }
 
-// one line per changed screen, then the bookings to reissue
+// the rename, one line per changed screen, then the bookings to reissue
 fn save_report_lines(
     database: &DistributionDatabase,
     cinema: &str,
     report: &CinemaSaveReport,
 ) -> Result<Vec<String>, String> {
-    let mut lines: Vec<String> = report
-        .screens
+    let rename = report
+        .renamed_from
         .iter()
-        .map(|change| match change {
+        .map(|old_name| format!("{old_name} is now {cinema}"));
+    let mut lines: Vec<String> = rename
+        .chain(report.screens.iter().map(|change| match change {
             ScreenChange::Added { screen } => format!("{cinema} / {screen}: new screen"),
             ScreenChange::Removed { screen } => format!("{cinema} / {screen}: removed"),
             ScreenChange::CertificatesChanged {
@@ -167,7 +171,7 @@ fn save_report_lines(
                 }
                 format!("{cinema} / {screen}: {}", changes.join(", "))
             }
-        })
+        }))
         .collect();
     if !report.bookings_to_reissue.is_empty() {
         let titles = report
@@ -206,6 +210,65 @@ pub fn import_flm(database: &mut DistributionDatabase, paths: &[PathBuf]) -> Vec
                 Ok(lines)
             });
             imported.unwrap_or_else(|error| vec![format!("{}: {error}", path.display())])
+        })
+        .collect()
+}
+
+fn feed_report_lines(
+    database: &DistributionDatabase,
+    feed_name: &str,
+    report: &FeedImportReport,
+) -> Result<Vec<String>, String> {
+    let mut lines = vec![format!(
+        "{feed_name}: {} FLMs imported, {} failed, {} no longer listed",
+        report.imported.len(),
+        report.failures.len(),
+        report.removed_facility_ids.len()
+    )];
+    for facility in &report.imported {
+        if facility.report.created {
+            lines.push(format!(
+                "{}: new cinema ({} screens)",
+                facility.cinema,
+                facility.report.screens.len()
+            ));
+        } else {
+            lines.extend(save_report_lines(
+                database,
+                &facility.cinema,
+                &facility.report,
+            )?);
+        }
+    }
+    lines.extend(
+        report
+            .failures
+            .iter()
+            .map(|failure| format!("{feed_name}: {}: {}", failure.facility_id, failure.reason)),
+    );
+    lines.extend(report.removed_facility_ids.iter().map(|facility_id| {
+        format!("{feed_name}: {facility_id} is no longer listed, its cinema is kept")
+    }));
+    Ok(lines)
+}
+
+// the database stays usable while the feed is fetched
+fn feed_lines(state: &AppState, feed: &StoredFeed) -> Result<Vec<String>, String> {
+    let remote_feed = feed.feed()?;
+    let previous = state.with_database(|database| database.feed_sync_state(&feed.site_list_url))?;
+    let refresh = refresh_feed(&remote_feed, &previous)?;
+    state.with_database(|database| {
+        let report = apply_feed_refresh(database, &feed.site_list_url, &previous, refresh)?;
+        feed_report_lines(database, &feed.name, &report)
+    })
+}
+
+// per feed a summary or its error, then what changed on each cinema it imported
+pub fn refresh_feeds(state: &AppState, feeds: &[StoredFeed]) -> Vec<String> {
+    feeds
+        .iter()
+        .flat_map(|feed| {
+            feed_lines(state, feed).unwrap_or_else(|error| vec![format!("{}: {error}", feed.name)])
         })
         .collect()
 }
@@ -254,6 +317,11 @@ pub fn cinemas_import_flm(
 }
 
 #[tauri::command(async)]
+pub fn cinemas_refresh_feeds(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(refresh_feeds(&state, &state.settings()?.feeds))
+}
+
+#[tauri::command(async)]
 pub fn cinemas_update(
     id: CinemaId,
     emails: Vec<String>,
@@ -288,13 +356,16 @@ pub fn history_import_dcpwizard(
 mod tests {
     use super::*;
     use crate::bookings::{issue, issue_cinema_pending, IssueDestination};
+    use crate::settings::{FeedAuthenticationSetting, FeedSetting};
     use crate::test_fixtures::{
         booked_database, dkdm, extended_flm, extended_flm_with_first_recipient, fixtures,
-        local_window, signed_settings, DCNC_TITLE, SMPTE_EXAMPLE_FLM,
+        local_window, signed_settings, site_list, FeedServer, DCNC_TITLE, FEED_SITE_LIST_PATH,
+        SMPTE_EXAMPLE_FLM,
     };
     use chrono::{Duration, Utc};
     use postkit::kdm_distribution::database::IssueScope;
     use postkit::kdm_distribution::window::kdm_window_in_time_zone;
+    use std::sync::Arc;
 
     fn pending_by_screen(database: &DistributionDatabase) -> Vec<(String, bool)> {
         crate::bookings::list(database, Utc::now()).unwrap()[0]
@@ -436,6 +507,166 @@ mod tests {
         assert_eq!(by_cinema[0].outcome.bundles[0].cinema, "Rex");
         assert_eq!(by_cinema[0].deliveries.len(), 1);
         assert_eq!(list(&database, Utc::now()).unwrap()[1].pending_screens, 0);
+    }
+
+    fn open_feed(name: &str, site_list_url: String) -> StoredFeed {
+        FeedSetting {
+            name: name.into(),
+            site_list_url,
+            authentication: FeedAuthenticationSetting::None,
+        }
+    }
+
+    const FIRST_MODIFIED: &str = "2026-10-01T10:00:00Z";
+    const SECOND_MODIFIED: &str = "2026-10-02T10:00:00Z";
+    const COMMAND_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    fn app_state(directory: &Path) -> AppState {
+        AppState::new(directory.join("settings.json"), directory.join("data"))
+    }
+
+    fn rex_feed_server() -> FeedServer {
+        let server = FeedServer::start();
+        server.serve(
+            "/flm/Rex.xml",
+            extended_flm(fixtures(), "Rex", "Europe/London"),
+        );
+        server.serve(FEED_SITE_LIST_PATH, site_list(&[("Rex", FIRST_MODIFIED)]));
+        server
+    }
+
+    #[test]
+    fn a_feed_refresh_lists_each_feed_then_the_screen_changes_and_reissues() {
+        let f = fixtures();
+        let directory = tempfile::tempdir().unwrap();
+        let server = rex_feed_server();
+        let feeds = [
+            open_feed("Exhibitor", server.url(FEED_SITE_LIST_PATH)),
+            open_feed("Closed", server.url("/closed/sitelist.xml")),
+        ];
+        let state = app_state(directory.path());
+
+        let lines = refresh_feeds(&state, &feeds);
+        assert_eq!(
+            lines[..2],
+            [
+                "Exhibitor: 1 FLMs imported, 0 failed, 0 no longer listed",
+                "Rex: new cinema (2 screens)",
+            ]
+        );
+        assert!(
+            lines[2].starts_with("Closed: GET ") && lines[2].ends_with("returned HTTP 404"),
+            "{lines:?}"
+        );
+        assert_eq!(lines.len(), 3);
+
+        let rex = state
+            .with_database(|database| {
+                let rex = database.cinemas()?[0].clone();
+                let title = database.add_title_from_dkdm(&dkdm(f, DCNC_TITLE, 30))?;
+                let booking = database.add_booking(
+                    title,
+                    &rex.screen_ids,
+                    local_window(),
+                    None,
+                    Utc::now(),
+                )?;
+                issue(
+                    database,
+                    &signed_settings(f, directory.path()),
+                    directory.path(),
+                    booking,
+                    IssueScope::PendingScreens,
+                    IssueDestination {
+                        output_folder: None,
+                        send_email: false,
+                    },
+                    Utc::now(),
+                )?;
+                Ok(rex)
+            })
+            .unwrap();
+
+        server.serve(
+            "/flm/Rex.xml",
+            extended_flm_with_first_recipient(
+                f,
+                "Rex",
+                "Europe/London",
+                &f.security_managers[2].certificate,
+            ),
+        );
+        server.serve(FEED_SITE_LIST_PATH, site_list(&[("Rex", SECOND_MODIFIED)]));
+        let lines = refresh_feeds(&state, &feeds[..1]);
+        let old_thumbprint = &rex.cinema.screens[0].cert_thumbprint;
+        let new_thumbprint = state
+            .with_database(|database| database.cinema(rex.id))
+            .unwrap()
+            .cinema
+            .screens[0]
+            .cert_thumbprint
+            .clone();
+        assert_eq!(
+            lines,
+            [
+                "Exhibitor: 1 FLMs imported, 0 failed, 0 no longer listed".to_string(),
+                format!(
+                    "Rex / 1: recipient certificate replaced, {old_thumbprint} became {new_thumbprint}"
+                ),
+                format!("Rex: issued KDMs no longer match, reissue {DCNC_TITLE}"),
+            ]
+        );
+
+        server.serve(FEED_SITE_LIST_PATH, site_list(&[]));
+        let lines = refresh_feeds(&state, &feeds[..1]);
+        assert_eq!(
+            lines,
+            [
+                "Exhibitor: 0 FLMs imported, 0 failed, 1 no longer listed",
+                "Exhibitor: urn:x-facilityID:example.com:Rex is no longer listed, its cinema is kept",
+            ]
+        );
+        let stored = state.with_database(|database| database.cinemas()).unwrap();
+        assert_eq!(stored.len(), 1);
+    }
+
+    #[test]
+    fn the_cinema_list_answers_while_a_feed_refresh_waits_for_its_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let server = rex_feed_server();
+        let feeds = vec![open_feed("Exhibitor", server.url(FEED_SITE_LIST_PATH))];
+        let state = Arc::new(app_state(directory.path()));
+        let held = server.hold_next_response();
+
+        let refreshing = {
+            let state = state.clone();
+            std::thread::spawn(move || refresh_feeds(&state, &feeds))
+        };
+        held.arrived
+            .recv_timeout(COMMAND_WAIT)
+            .expect("the refresh asks for the SiteList");
+        let (listed_sender, listed) = std::sync::mpsc::channel();
+        {
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let rows = state.with_database(|database| list(database, Utc::now()));
+                listed_sender.send(rows.map(|rows| rows.len())).unwrap();
+            });
+        }
+        let listed = listed
+            .recv_timeout(COMMAND_WAIT)
+            .expect("the cinema list answers while the SiteList is held");
+        assert_eq!(listed, Ok(0));
+
+        held.release.send(()).unwrap();
+        let lines = refreshing.join().unwrap();
+        assert_eq!(
+            lines,
+            [
+                "Exhibitor: 1 FLMs imported, 0 failed, 0 no longer listed",
+                "Rex: new cinema (2 screens)",
+            ]
+        );
     }
 
     #[test]

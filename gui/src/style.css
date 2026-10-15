@@ -54,3 +54,12 @@ textarea {
   gap: 8px;
   margin: 6px 0;
 }
+.feed-row {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+.feed-row:not([data-kind="basic"]) .feed-basic,
+.feed-row:not([data-kind="clientCertificate"]) .feed-client-certificate {
+  display: none;
+}

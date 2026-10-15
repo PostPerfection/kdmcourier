@@ -36,6 +36,9 @@ const FILE_FILTERS = {
 const FOLDER_FILTER = "folder";
 const READY_STATUS = "Ready";
 const SETTINGS_SAVED_STATUS = "Settings saved";
+const REFRESHING_FEEDS_STATUS = "Refreshing feeds";
+const NO_FEEDS_LINE = "No FLM feeds, add one in Settings";
+const NEW_FEED = { name: "", siteListUrl: "", authentication: { kind: "none" } };
 const ZONE_LIST_ID = "time-zone-names";
 
 const statusBadge = document.getElementById("status");
@@ -261,6 +264,22 @@ document.getElementById("cinemas-import-flm").addEventListener("click", () =>
     if (!picked) return;
     const paths = Array.isArray(picked) ? picked : [picked];
     showImportResults(await invoke("cinemas_import_flm", { paths }));
+    await refreshCinemas();
+  }),
+);
+
+const refreshFeedsButton = document.getElementById("cinemas-refresh-feeds");
+refreshFeedsButton.addEventListener("click", () =>
+  run(async () => {
+    refreshFeedsButton.disabled = true;
+    showStatus(REFRESHING_FEEDS_STATUS);
+    try {
+      const lines = await invoke("cinemas_refresh_feeds");
+      showImportResults(lines.length > 0 ? lines : [NO_FEEDS_LINE]);
+    } finally {
+      refreshFeedsButton.disabled = false;
+    }
+    showStatus(READY_STATUS);
     await refreshCinemas();
   }),
 );
@@ -588,6 +607,90 @@ const settingsFields = {
   smtpBody: document.getElementById("set-smtp-body"),
 };
 
+const feedList = document.getElementById("set-feeds");
+
+function feedRowHtml(feed) {
+  const authentication = feed.authentication;
+  const passwordPlaceholder = authentication.password?.set ? "Stored, type to replace" : "";
+  return `<div class="feed-row" data-kind="${escapeHtml(authentication.kind)}">
+    <div class="prop-field">
+      <label>Name</label>
+      <input type="text" class="feed-name" value="${escapeHtml(feed.name)}" spellcheck="false">
+    </div>
+    <div class="prop-field">
+      <label>SiteList URL</label>
+      <input type="url" class="feed-url" value="${escapeHtml(feed.siteListUrl)}" spellcheck="false">
+    </div>
+    <div class="prop-field">
+      <label>Authentication</label>
+      <select class="feed-kind">
+        <option value="none">None</option>
+        <option value="basic">User and password</option>
+        <option value="clientCertificate">Client certificate</option>
+      </select>
+    </div>
+    <div class="prop-field feed-basic">
+      <label>User</label>
+      <input type="text" class="feed-username" value="${escapeHtml(authentication.username ?? "")}" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="prop-field feed-basic">
+      <label>Password</label>
+      <input type="password" class="feed-password" autocomplete="new-password" placeholder="${passwordPlaceholder}">
+      <label><input type="checkbox" class="feed-password-clear"> Remove the stored password</label>
+    </div>
+    <div class="prop-field feed-client-certificate">
+      <label>Client Certificate Chain, PEM</label>
+      <div class="input-with-btn">
+        <input type="text" class="feed-certificate" value="${escapeHtml(authentication.certificateChain ?? "")}" readonly>
+        <button type="button" class="btn-sm feed-browse" data-target="feed-certificate" data-filter="certificate">…</button>
+      </div>
+    </div>
+    <div class="prop-field feed-client-certificate">
+      <label>Client Private Key, PEM</label>
+      <div class="input-with-btn">
+        <input type="text" class="feed-key" value="${escapeHtml(authentication.privateKey ?? "")}" readonly>
+        <button type="button" class="btn-sm feed-browse" data-target="feed-key" data-filter="key">…</button>
+      </div>
+    </div>
+    <button type="button" class="btn-sm feed-remove">Remove feed</button>
+  </div>`;
+}
+
+function addFeedRow(feed) {
+  feedList.insertAdjacentHTML("beforeend", feedRowHtml(feed));
+  const row = feedList.lastElementChild;
+  const kind = row.querySelector(".feed-kind");
+  kind.value = feed.authentication.kind;
+  kind.addEventListener("change", () => {
+    row.dataset.kind = kind.value;
+  });
+  row.querySelectorAll(".feed-browse").forEach((button) => {
+    button.addEventListener("click", () =>
+      run(async () => {
+        const path = await pickFile(button.dataset.filter);
+        if (path) row.querySelector(`.${button.dataset.target}`).value = path;
+      }),
+    );
+  });
+  row.querySelector(".feed-remove").addEventListener("click", () => row.remove());
+}
+
+function feedFields(row) {
+  const value = (selector) => row.querySelector(selector).value;
+  return {
+    name: value(".feed-name"),
+    siteListUrl: value(".feed-url"),
+    kind: value(".feed-kind"),
+    username: value(".feed-username"),
+    newPassword: value(".feed-password"),
+    clearPassword: row.querySelector(".feed-password-clear").checked,
+    certificateChain: value(".feed-certificate"),
+    privateKey: value(".feed-key"),
+  };
+}
+
+document.getElementById("set-feed-add").addEventListener("click", () => addFeedRow(NEW_FEED));
+
 function fillSettings(settings) {
   const fields = settingsFields;
   fields.signerCertificate.value = settings.signerCertificate ?? "";
@@ -607,6 +710,8 @@ function fillSettings(settings) {
   fields.smtpPassword.value = "";
   fields.smtpPassword.placeholder = settings.smtpPasswordSet ? "Stored, type to replace" : "";
   fields.smtpPasswordClear.checked = false;
+  feedList.innerHTML = "";
+  settings.feeds.forEach(addFeedRow);
 }
 
 async function loadSettings() {
@@ -644,6 +749,7 @@ document.getElementById("settings-form").addEventListener("submit", (event) => {
       },
       newPassword: fields.smtpPassword.value,
       clearPassword: fields.smtpPasswordClear.checked,
+      feeds: [...feedList.querySelectorAll(".feed-row")].map(feedFields),
     });
     fillSettings(await invoke("settings_save", { update }));
     showStatus(SETTINGS_SAVED_STATUS);

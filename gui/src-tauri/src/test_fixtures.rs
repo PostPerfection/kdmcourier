@@ -7,8 +7,12 @@ use postkit::certificate::{
 use postkit::kdm_distribution::cinema::read_flm_cinema;
 use postkit::kdm_distribution::database::{BookingId, DistributionDatabase};
 use postkit::kdm_distribution::window::LocalWindow;
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub const CPL_ID: &str = "8a2b1c3d-4e5f-6071-8293-a4b5c6d7e8f9";
 pub const DCNC_TITLE: &str =
@@ -290,5 +294,108 @@ pub fn signed_settings(f: &Fixtures, data_dir: &Path) -> Settings {
         creation_facility: "DIS".to_string(),
         output_folder: None,
         smtp: None,
+        feeds: Vec::new(),
+    }
+}
+
+pub const FEED_SITE_LIST_PATH: &str = "/feed/sitelist.xml";
+
+// a SMPTE ST 430-15 SiteList linking each facility to /flm/<facility name>.xml
+pub fn site_list(facilities: &[(&str, &str)]) -> String {
+    let entries: String = facilities
+        .iter()
+        .map(|(facility_name, modified)| {
+            format!(
+                r#"<Facility id="urn:x-facilityID:example.com:{facility_name}" modified="{modified}" xlink:href="/flm/{facility_name}.xml" xlink:type="simple"/>"#
+            )
+        })
+        .collect();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<SiteList xmlns="http://www.smpte-ra.org/ns/430-15/2017/SiteList" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <Originator>https://feed.example.com/feed/sitelist.xml</Originator>
+  <SystemName>Exhibitor TMS</SystemName>
+  <DateTimeCreated>2026-10-01T10:00:00+00:00</DateTimeCreated>
+  <FacilityList>{entries}</FacilityList>
+</SiteList>"#
+    )
+}
+
+// plain http on localhost, each path answers its stored body and anything else 404
+pub struct FeedServer {
+    origin: String,
+    bodies: Arc<Mutex<HashMap<String, String>>>,
+    held_response: Arc<Mutex<Option<ResponseGate>>>,
+}
+
+struct ResponseGate {
+    arrived: Sender<()>,
+    release: Receiver<()>,
+}
+
+// the server says when the held request arrived and answers it once released
+pub struct HeldResponse {
+    pub arrived: Receiver<()>,
+    pub release: Sender<()>,
+}
+
+impl FeedServer {
+    pub fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let bodies = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+        let held_response = Arc::new(Mutex::new(None::<ResponseGate>));
+        let (served, gate) = (bodies.clone(), held_response.clone());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut request_line = String::new();
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut request_line).is_err() {
+                    continue;
+                }
+                let mut header = String::new();
+                while reader.read_line(&mut header).is_ok_and(|read| read > 2) {
+                    header.clear();
+                }
+                if let Some(gate) = gate.lock().unwrap().take() {
+                    let _ = gate.arrived.send(());
+                    let _ = gate.release.recv();
+                }
+                let path = request_line.split(' ').nth(1).unwrap_or_default();
+                let body = served.lock().unwrap().get(path).cloned();
+                let (status, body) = match body {
+                    Some(body) => ("200 OK", body),
+                    None => ("404 Not Found", String::new()),
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        Self {
+            origin,
+            bodies,
+            held_response,
+        }
+    }
+
+    pub fn hold_next_response(&self) -> HeldResponse {
+        let (arrived_sender, arrived) = channel();
+        let (release, release_receiver) = channel();
+        *self.held_response.lock().unwrap() = Some(ResponseGate {
+            arrived: arrived_sender,
+            release: release_receiver,
+        });
+        HeldResponse { arrived, release }
+    }
+
+    pub fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.origin)
+    }
+
+    pub fn serve(&self, path: &str, body: String) {
+        self.bodies.lock().unwrap().insert(path.to_string(), body);
     }
 }

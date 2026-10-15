@@ -20,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 dirs = "6"
-postkit = { path = "../../extern/postkit" }
+postkit = { path = "../../extern/postkit", features = ["flm-exchange"] }
 guikit-startup = { path = "../../extern/guikit/startup" }
 
 [dev-dependencies]
