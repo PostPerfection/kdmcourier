@@ -1,4 +1,6 @@
 use crate::state::AppState;
+use postkit::certificate::parse_kdm;
+use postkit::kdm_coverage::{check_kdm_coverage, find_cpl, read_cpl_keys, KdmCoverage};
 use postkit::kdm_distribution::database::{DistributionDatabase, Title, TitleId};
 use postkit::kdm_distribution::formulation::ContentStandard;
 use serde::Serialize;
@@ -39,6 +41,25 @@ pub fn import_dkdm(database: &mut DistributionDatabase, path: &Path) -> Result<T
     Ok(database.title(id)?.into())
 }
 
+// a folder is searched for the DKDM's CPL, a file is read as the CPL
+pub fn check_against_dcp(
+    database: &DistributionDatabase,
+    id: TitleId,
+    path: &Path,
+) -> Result<KdmCoverage, String> {
+    let kdm = parse_kdm(&database.title(id)?.dkdm_xml)?;
+    let cpl_path = if path.is_dir() {
+        find_cpl(path, kdm.cpl_id)?
+            .ok_or_else(|| format!("{} holds no CPL urn:uuid:{}", path.display(), kdm.cpl_id))?
+    } else {
+        path.to_path_buf()
+    };
+    let cpl = std::fs::read_to_string(&cpl_path)
+        .map_err(|error| format!("cannot read CPL {}: {error}", cpl_path.display()))?;
+    let keys = read_cpl_keys(&cpl).map_err(|error| format!("{}: {error}", cpl_path.display()))?;
+    Ok(check_kdm_coverage(&kdm, &keys))
+}
+
 #[tauri::command(async)]
 pub fn titles_list(state: tauri::State<'_, AppState>) -> Result<Vec<TitleRow>, String> {
     state.with_database(|database| list(database))
@@ -59,6 +80,15 @@ pub fn titles_set_standard(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     state.with_database(|database| database.set_title_standard(id, standard))
+}
+
+#[tauri::command(async)]
+pub fn titles_check_dcp(
+    id: TitleId,
+    path: std::path::PathBuf,
+    state: tauri::State<'_, AppState>,
+) -> Result<KdmCoverage, String> {
+    state.with_database(|database| check_against_dcp(database, id, &path))
 }
 
 #[cfg(test)]

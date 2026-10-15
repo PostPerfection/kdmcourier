@@ -25,6 +25,7 @@ import { VENDORS, fetchRequest, fetchedText, vendorLabel } from "./certificate-f
 import { bookingExpiryRow, nothingExpires, signerChainRow } from "./expiry-rows.js";
 import { cinemaIssueStatus, deliveryText, failedBookingText, issuedStatus, outcomeRows } from "./issue-outcome.js";
 import { chainInspectionHtml, fileInspectionHtml } from "./inspection-view.js";
+import { coverageErrorHtml, coverageHtml } from "./kdm-coverage-view.js";
 import { quickKdmOutcome, quickKdmRequest } from "./quick-kdm-form.js";
 import { settingsUpdateFromFields } from "./settings-form.js";
 
@@ -32,6 +33,7 @@ const FILE_FILTERS = {
   certificate: [{ name: "Certificate", extensions: ["pem", "crt", "cer"] }],
   key: [{ name: "Private key", extensions: ["pem", "key"] }],
   dkdm: [{ name: "DKDM", extensions: ["xml"] }],
+  cpl: [{ name: "CPL", extensions: ["xml"] }],
   flm: [{ name: "FLM", extensions: ["xml"] }],
   json: [{ name: "DCP Wizard cinemas", extensions: ["json"] }],
   jsonl: [{ name: "DCP Wizard KDM history", extensions: ["jsonl"] }],
@@ -45,6 +47,7 @@ const NO_FEEDS_LINE = "No FLM feeds, add one in Settings";
 const NEW_FEED = { name: "", siteListUrl: "", authentication: { kind: "none" } };
 const ZONE_LIST_ID = "time-zone-names";
 const SCREEN_COLUMNS = 6;
+const TITLE_COLUMNS = 6;
 const NO_CERTIFICATE_CHANGE_LINE = "The certificate is the one already stored";
 
 const statusBadge = document.getElementById("status");
@@ -141,19 +144,52 @@ function refreshView(view) {
 
 // titles
 
+function titleRowHtml(title) {
+  return `<tr>
+    <td>${escapeHtml(title.contentTitle)}</td>
+    <td>${escapeHtml(title.cplId)}</td>
+    <td>${escapeHtml(title.standard ?? "unknown")}</td>
+    <td>${escapeHtml(title.dkdmNotValidBefore)}</td>
+    <td>${escapeHtml(title.dkdmNotValidAfter)}</td>
+    <td><button type="button" class="btn-sm title-check" title="Check the DKDM has a key for every encrypted asset">Check against DCP</button></td>
+  </tr>
+  <tr class="title-check-row" data-title="${title.id}" hidden>
+    <td colspan="${TITLE_COLUMNS}">
+      <button type="button" class="btn-sm title-check-folder">DCP folder…</button>
+      <button type="button" class="btn-sm title-check-file">CPL file…</button>
+      <div class="title-check-result"></div>
+    </td>
+  </tr>`;
+}
+
+async function checkTitleAgainstDcp(checkRow, filterName) {
+  const path = await pickFile(filterName);
+  if (!path) return;
+  const result = checkRow.querySelector(".title-check-result");
+  try {
+    const coverage = await invoke("titles_check_dcp", { id: Number(checkRow.dataset.title), path });
+    result.innerHTML = coverageHtml(coverage);
+  } catch (error) {
+    result.innerHTML = coverageErrorHtml(error);
+  }
+}
+
 async function refreshTitles() {
   const titles = await invoke("titles_list");
-  document.getElementById("titles-tbody").innerHTML = titles
-    .map(
-      (title) => `<tr>
-        <td>${escapeHtml(title.contentTitle)}</td>
-        <td>${escapeHtml(title.cplId)}</td>
-        <td>${escapeHtml(title.standard ?? "unknown")}</td>
-        <td>${escapeHtml(title.dkdmNotValidBefore)}</td>
-        <td>${escapeHtml(title.dkdmNotValidAfter)}</td>
-      </tr>`,
-    )
-    .join("");
+  const tbody = document.getElementById("titles-tbody");
+  tbody.innerHTML = titles.map(titleRowHtml).join("");
+  tbody.querySelectorAll(".title-check").forEach((button) => {
+    const checkRow = button.closest("tr").nextElementSibling;
+    button.addEventListener("click", () => {
+      checkRow.hidden = false;
+    });
+    checkRow
+      .querySelector(".title-check-folder")
+      .addEventListener("click", () => run(() => checkTitleAgainstDcp(checkRow, FOLDER_FILTER)));
+    checkRow
+      .querySelector(".title-check-file")
+      .addEventListener("click", () => run(() => checkTitleAgainstDcp(checkRow, "cpl")));
+  });
   return titles;
 }
 

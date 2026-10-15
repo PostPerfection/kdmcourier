@@ -30,6 +30,7 @@ pub fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bu
         titles::titles_list,
         titles::titles_import_dkdm,
         titles::titles_set_standard,
+        titles::titles_check_dcp,
         cinemas::cinemas_list,
         cinemas::cinemas_import_flm,
         cinemas::cinemas_refresh_feeds,

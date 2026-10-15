@@ -473,3 +473,125 @@ fn a_fetched_lone_certificate_gets_a_quick_kdm_with_a_warning_and_a_wrong_one_is
     assert_eq!(issues[0]["bookingId"], Value::Null);
     assert_eq!(issues[0]["fileName"], issued["written"]["kdm"]["fileName"]);
 }
+
+const OTHER_CPL_ID: &str = "0c0c0000-0000-0000-0000-000000000000";
+
+// one reel per picture and sound KeyId pair
+fn cpl_with_keys(cpl_id: &str, reels: &[(u128, u128)]) -> String {
+    use postkit::packaging::{ns, DcpCpl, DcpCplReel};
+    let key = |value: u128| Some(uuid::Uuid::from_u128(value).to_string());
+    DcpCpl {
+        uuid: cpl_id.to_string(),
+        namespace: ns::CPL_SMPTE.into(),
+        title: DCNC_TITLE.into(),
+        reels: reels
+            .iter()
+            .map(|&(picture_key, sound_key)| DcpCplReel {
+                reel_id: uuid::Uuid::new_v4().to_string(),
+                picture_id: uuid::Uuid::new_v4().to_string(),
+                picture_edit_rate_num: 24,
+                picture_edit_rate_den: 1,
+                picture_duration: 24,
+                picture_width: 1998,
+                picture_height: 1080,
+                picture_key_id: key(picture_key),
+                sound_id: Some(uuid::Uuid::new_v4().to_string()),
+                sound_edit_rate_num: 24,
+                sound_edit_rate_den: 1,
+                sound_duration: 24,
+                sound_key_id: key(sound_key),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
+    .to_xml()
+}
+
+fn dcp_folder(directory: &std::path::Path, cpl_id: &str, reels: &[(u128, u128)]) {
+    use postkit::packaging::{ns, AssetMap, AssetMapAsset};
+    std::fs::create_dir_all(directory).unwrap();
+    std::fs::write(directory.join("cpl.xml"), cpl_with_keys(cpl_id, reels)).unwrap();
+    let assetmap = AssetMap {
+        uuid: uuid::Uuid::new_v4().to_string(),
+        namespace: ns::AM_SMPTE.into(),
+        assets: vec![AssetMapAsset {
+            id: cpl_id.to_string(),
+            path: "cpl.xml".into(),
+            packing_list: false,
+        }],
+        ..Default::default()
+    };
+    std::fs::write(directory.join("ASSETMAP.xml"), assetmap.to_xml()).unwrap();
+}
+
+#[test]
+fn a_title_checks_its_dkdm_against_a_dcp_folder_or_a_cpl_file() {
+    let f = fixtures();
+    let directory = tempfile::tempdir().unwrap();
+    let (_app, webview) = mock_app(directory.path());
+    let dkdm_path = directory.path().join("dkdm.xml");
+    std::fs::write(&dkdm_path, dkdm(f, DCNC_TITLE, 30)).unwrap();
+    let title: Value =
+        invoke(&webview, "titles_import_dkdm", json!({ "path": dkdm_path })).unwrap();
+    let [picture_key, sound_key] = [content_keys()[0].key_id, content_keys()[1].key_id];
+    let unknown_key = uuid::Uuid::from_u128(0x3333);
+
+    let folder = directory.path().join("dcp");
+    dcp_folder(
+        &folder,
+        CPL_ID,
+        &[
+            (picture_key.as_u128(), sound_key.as_u128()),
+            (picture_key.as_u128(), unknown_key.as_u128()),
+        ],
+    );
+    let coverage: Value = invoke(
+        &webview,
+        "titles_check_dcp",
+        json!({ "id": title["id"], "path": folder }),
+    )
+    .unwrap();
+    assert_eq!(coverage["cpl_id"], json!(CPL_ID));
+    assert_eq!(coverage["encrypted_asset_count"], json!(4));
+    assert_eq!(
+        coverage["missing_keys"],
+        json!([{ "reel": 2, "kind": "MainSound", "key_id": unknown_key }])
+    );
+
+    let covered = directory.path().join("covered.xml");
+    std::fs::write(
+        &covered,
+        cpl_with_keys(CPL_ID, &[(picture_key.as_u128(), sound_key.as_u128())]),
+    )
+    .unwrap();
+    let coverage: Value = invoke(
+        &webview,
+        "titles_check_dcp",
+        json!({ "id": title["id"], "path": covered }),
+    )
+    .unwrap();
+    assert_eq!(coverage["missing_keys"], json!([]));
+    assert_eq!(coverage["unused_keys"], json!([]));
+    assert_eq!(coverage["key_type_mismatches"], json!([]));
+
+    let other = directory.path().join("other");
+    dcp_folder(
+        &other,
+        OTHER_CPL_ID,
+        &[(picture_key.as_u128(), sound_key.as_u128())],
+    );
+    let error = invoke::<Value>(
+        &webview,
+        "titles_check_dcp",
+        json!({ "id": title["id"], "path": other }),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .as_str()
+            .unwrap()
+            .contains(&format!("holds no CPL urn:uuid:{CPL_ID}")),
+        "{error}"
+    );
+}
